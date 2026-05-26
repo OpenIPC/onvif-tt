@@ -110,4 +110,50 @@ class WSAValidator(Plugin):
                        "'Response' or a Fault URI)",
             ))
 
+        # If this is a Fault response, validate the SOAP 1.2 Fault
+        # structure. Spec mandates env:Code → env:Value and env:Reason
+        # → env:Text under the Fault element. Vendors sometimes ship
+        # half-built faults that look fault-like to the eye but don't
+        # satisfy the schema.
+        if "Fault" in action or action.endswith("fault"):
+            body = envelope.find(f"{{{_SOAP12_NS}}}Body")
+            if body is not None:
+                fault = body.find(f"{{{_SOAP12_NS}}}Fault")
+                if fault is not None:
+                    self._validate_fault_structure(fault, op_name)
+
         return envelope, http_headers
+
+    def _validate_fault_structure(self, fault, op_name: str) -> None:
+        """SOAP 1.2 Fault must contain env:Code/env:Value + env:Reason/env:Text."""
+        assert self._sink is not None
+        code = fault.find(f"{{{_SOAP12_NS}}}Code")
+        if code is None:
+            self._sink.append(WSAViolation(
+                operation=op_name,
+                code="fault-missing-code",
+                detail="SOAP Fault envelope missing required <env:Code> child",
+            ))
+        else:
+            value = code.find(f"{{{_SOAP12_NS}}}Value")
+            if value is None or not (value.text or "").strip():
+                self._sink.append(WSAViolation(
+                    operation=op_name,
+                    code="fault-code-missing-value",
+                    detail="<env:Code> missing required non-empty <env:Value>",
+                ))
+        reason = fault.find(f"{{{_SOAP12_NS}}}Reason")
+        if reason is None:
+            self._sink.append(WSAViolation(
+                operation=op_name,
+                code="fault-missing-reason",
+                detail="SOAP Fault envelope missing required <env:Reason> child",
+            ))
+        else:
+            text = reason.find(f"{{{_SOAP12_NS}}}Text")
+            if text is None or not (text.text or "").strip():
+                self._sink.append(WSAViolation(
+                    operation=op_name,
+                    code="fault-reason-missing-text",
+                    detail="<env:Reason> missing required non-empty <env:Text>",
+                ))

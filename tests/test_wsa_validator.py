@@ -92,6 +92,76 @@ def test_wsa_soap11_envelope_recorded():
     assert any(x.code == "soap11-envelope" for x in sink)
 
 
+def _build_fault_envelope(*, with_code: bool = True, code_value: str = "env:Sender",
+                           with_reason: bool = True, reason_text: str = "Bad input"):
+    """Build a SOAP 1.2 envelope containing a Fault. Knobs let tests
+    exercise the various structural-violation paths."""
+    nsmap = {"s": SOAP12, "wsa": WSA}
+    env = etree.Element(f"{{{SOAP12}}}Envelope", nsmap=nsmap)
+    header = etree.SubElement(env, f"{{{SOAP12}}}Header")
+    a = etree.SubElement(header, f"{{{WSA}}}Action")
+    a.text = "http://www.w3.org/2005/08/addressing/soap/fault"
+    body = etree.SubElement(env, f"{{{SOAP12}}}Body")
+    fault = etree.SubElement(body, f"{{{SOAP12}}}Fault")
+    if with_code:
+        code = etree.SubElement(fault, f"{{{SOAP12}}}Code")
+        if code_value:
+            value = etree.SubElement(code, f"{{{SOAP12}}}Value")
+            value.text = code_value
+    if with_reason:
+        reason = etree.SubElement(fault, f"{{{SOAP12}}}Reason")
+        if reason_text:
+            text = etree.SubElement(reason, f"{{{SOAP12}}}Text")
+            text.text = reason_text
+    return env
+
+
+def test_wsa_well_formed_fault_passes():
+    sink: list[WSAViolation] = []
+    v = WSAValidator()
+    v.attach(sink)
+    env = _build_fault_envelope()
+    v.ingress(env, {}, _FakeOp("GetCapabilities"))
+    fault_codes = {x.code for x in sink if x.code.startswith("fault-")}
+    assert fault_codes == set(), f"unexpected fault violations: {fault_codes}"
+
+
+def test_wsa_fault_missing_code_recorded():
+    sink: list[WSAViolation] = []
+    v = WSAValidator()
+    v.attach(sink)
+    env = _build_fault_envelope(with_code=False)
+    v.ingress(env, {}, _FakeOp("GetCapabilities"))
+    assert any(x.code == "fault-missing-code" for x in sink)
+
+
+def test_wsa_fault_code_missing_value_recorded():
+    sink: list[WSAViolation] = []
+    v = WSAValidator()
+    v.attach(sink)
+    env = _build_fault_envelope(code_value="")
+    v.ingress(env, {}, _FakeOp("GetCapabilities"))
+    assert any(x.code == "fault-code-missing-value" for x in sink)
+
+
+def test_wsa_fault_missing_reason_recorded():
+    sink: list[WSAViolation] = []
+    v = WSAValidator()
+    v.attach(sink)
+    env = _build_fault_envelope(with_reason=False)
+    v.ingress(env, {}, _FakeOp("GetCapabilities"))
+    assert any(x.code == "fault-missing-reason" for x in sink)
+
+
+def test_wsa_fault_reason_missing_text_recorded():
+    sink: list[WSAViolation] = []
+    v = WSAValidator()
+    v.attach(sink)
+    env = _build_fault_envelope(reason_text="")
+    v.ingress(env, {}, _FakeOp("GetCapabilities"))
+    assert any(x.code == "fault-reason-missing-text" for x in sink)
+
+
 def test_wsa_unattached_plugin_is_silent():
     """If attach() was never called, the plugin must NOT crash on
     ingress — it just no-ops. This is the default state right after
