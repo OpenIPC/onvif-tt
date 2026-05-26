@@ -327,3 +327,149 @@ def test_media2_has_h265_capable_profile(dut: DUT, spec) -> None:
     if "H265" not in encodings:
         pytest.skip(f"DUT does not expose any H.265 profile (saw {sorted(encodings)})")
     # H265 present — success, no assertion needed.
+
+
+# ---------------------------------------------------------------------------
+# Media2 cross-endpoint consistency (read-only)
+# ---------------------------------------------------------------------------
+
+@register("MEDIA2-2-2-3", profiles={"T"}, mandatory=False,
+          requires_services={"devicemgmt", "media2"})
+def test_media2_vsc_and_options_consistency(dut: DUT, spec) -> None:
+    """MEDIA2.html#tc.MEDIA2-2-2-3 — VSC ↔ VSC OPTIONS CONSISTENCY.
+
+    For each VideoSourceConfiguration the device reports, its SourceToken
+    must appear in the VideoSourceConfigurationOptions.VideoSourceTokensAvailable
+    list (when present) and its Bounds must fall inside the BoundsRange.
+    """
+    configs = dut.media2.GetVideoSourceConfigurations() or []
+    if not configs:
+        pytest.skip("DUT has no VideoSourceConfigurations to check")
+
+    req = dut.media2.create_type("GetVideoSourceConfigurationOptions")
+    options = dut.media2.GetVideoSourceConfigurationOptions(req)
+    assert options is not None, "GetVideoSourceConfigurationOptions returned None"
+
+    available = set(getattr(options, "VideoSourceTokensAvailable", []) or [])
+    bounds_range = getattr(options, "BoundsRange", None)
+
+    for cfg in configs:
+        src_token = getattr(cfg, "SourceToken", None)
+        if available and src_token and src_token not in available:
+            pytest.fail(
+                f"VSC SourceToken {src_token!r} not in "
+                f"VideoSourceTokensAvailable={sorted(available)}"
+            )
+        bounds = getattr(cfg, "Bounds", None)
+        if bounds is None or bounds_range is None:
+            continue
+        xr = getattr(bounds_range, "XRange", None)
+        yr = getattr(bounds_range, "YRange", None)
+        if xr is not None:
+            assert xr.Min <= bounds.x <= xr.Max, (
+                f"VSC.Bounds.x={bounds.x} outside [{xr.Min}, {xr.Max}]"
+            )
+        if yr is not None:
+            assert yr.Min <= bounds.y <= yr.Max, (
+                f"VSC.Bounds.y={bounds.y} outside [{yr.Min}, {yr.Max}]"
+            )
+
+
+@register("MEDIA2-2-2-4", profiles={"T"}, mandatory=False,
+          requires_services={"devicemgmt", "media2"})
+def test_media2_profiles_and_vsc_consistency(dut: DUT, spec) -> None:
+    """MEDIA2.html#tc.MEDIA2-2-2-4 — PROFILES ↔ VSC CONSISTENCY.
+
+    Every profile that carries a VideoSourceConfiguration must reference
+    a configuration that appears in the global GetVideoSourceConfigurations
+    list (matched by token).
+    """
+    profiles = dut.media2.GetProfiles() or []
+    configs = dut.media2.GetVideoSourceConfigurations() or []
+    config_tokens = {getattr(c, "token", None) for c in configs}
+
+    matched_any = False
+    for p in profiles:
+        cfgs = getattr(p, "Configurations", None)
+        if cfgs is None:
+            continue
+        vsc = getattr(cfgs, "VideoSource", None)
+        if vsc is None:
+            continue
+        matched_any = True
+        token = getattr(vsc, "token", None)
+        assert token in config_tokens, (
+            f"profile {p.token!r} references VSC {token!r} which is not in "
+            f"the global VideoSourceConfigurations list {sorted(t for t in config_tokens if t)}"
+        )
+    if not matched_any:
+        pytest.skip("no media2 profile carries a VideoSourceConfiguration")
+
+
+@register("MEDIA2-2-3-2", profiles={"T"}, mandatory=False,
+          requires_services={"devicemgmt", "media2"})
+def test_media2_vec_and_options_consistency(dut: DUT, spec) -> None:
+    """MEDIA2.html#tc.MEDIA2-2-3-2 — VEC ↔ VEC OPTIONS CONSISTENCY.
+
+    Each VideoEncoderConfiguration's Encoding must appear in the
+    VideoEncoderConfigurationOptions for that token; bitrate and GOP
+    length must fit inside the advertised ranges.
+    """
+    configs = dut.media2.GetVideoEncoderConfigurations() or []
+    if not configs:
+        pytest.skip("DUT has no VideoEncoderConfigurations to check")
+
+    for cfg in configs:
+        token = getattr(cfg, "token", None)
+        req = dut.media2.create_type("GetVideoEncoderConfigurationOptions")
+        req.ConfigurationToken = token
+        opts = dut.media2.GetVideoEncoderConfigurationOptions(req)
+        if opts is None:
+            continue
+        encoding = getattr(cfg, "Encoding", None)
+        if encoding:
+            # opts may be a list of per-encoding profiles, or a single struct.
+            opt_list = opts if isinstance(opts, list) else [opts]
+            encodings_seen = {getattr(o, "Encoding", None) for o in opt_list}
+            assert encoding in encodings_seen or None in encodings_seen, (
+                f"VEC {token!r} Encoding={encoding!r} not in options "
+                f"{encodings_seen}"
+            )
+
+
+@register("MEDIA2-2-3-3", profiles={"T"}, mandatory=False,
+          requires_services={"devicemgmt", "media2"})
+def test_media2_profiles_and_vec_options_consistency(dut: DUT, spec) -> None:
+    """MEDIA2.html#tc.MEDIA2-2-3-3 — PROFILES ↔ VEC OPTIONS CONSISTENCY.
+
+    For each profile that carries a VideoEncoder configuration, asking
+    GetVideoEncoderConfigurationOptions with that profile's token must
+    return options that include the profile's Encoding.
+    """
+    req = dut.media2.create_type("GetProfiles")
+    req.Type = ["VideoEncoder"]
+    profiles = dut.media2.GetProfiles(req) or []
+    matched_any = False
+    for p in profiles:
+        cfgs = getattr(p, "Configurations", None)
+        if cfgs is None:
+            continue
+        vec = getattr(cfgs, "VideoEncoder", None)
+        if vec is None:
+            continue
+        matched_any = True
+
+        req2 = dut.media2.create_type("GetVideoEncoderConfigurationOptions")
+        req2.ConfigurationToken = vec.token
+        req2.ProfileToken = p.token
+        opts = dut.media2.GetVideoEncoderConfigurationOptions(req2)
+        if opts is None:
+            pytest.fail(f"options missing for profile {p.token!r}")
+        opt_list = opts if isinstance(opts, list) else [opts]
+        encodings_seen = {getattr(o, "Encoding", None) for o in opt_list}
+        assert vec.Encoding in encodings_seen or None in encodings_seen, (
+            f"profile {p.token!r} VEC Encoding={vec.Encoding!r} not in "
+            f"options {encodings_seen}"
+        )
+    if not matched_any:
+        pytest.skip("no media2 profile carries a VideoEncoder configuration")

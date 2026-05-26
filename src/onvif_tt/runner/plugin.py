@@ -39,6 +39,13 @@ def pytest_addoption(parser):  # noqa: D401
         "--mandatory-only", action="store_true",
         help="Only run tests flagged mandatory.",
     )
+    group.addoption(
+        "--allow-writes", action="store_true",
+        help="Opt in to tests that mutate persistent DUT state "
+             "(motor actuation, configuration change, reboot, factory "
+             "reset). Off by default — tests flagged requires_writes "
+             "skip unless this flag is given.",
+    )
     group.addoption("--json-report", default="", help="Path to JSON result file.")
     group.addoption(
         "--corpus-dir",

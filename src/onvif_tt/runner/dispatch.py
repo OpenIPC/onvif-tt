@@ -99,6 +99,10 @@ def test_onvif_case(test_id, dut, _services, _device_info, spec, request):
     missing = impl.requires_services - set(_services)
     if missing:
         pytest.skip(f"DUT does not advertise services: {sorted(missing)}")
+    if impl.requires_writes and not request.config.getoption("--allow-writes"):
+        pytest.skip(
+            "test mutates DUT state — pass --allow-writes to enable"
+        )
 
     # Device-fingerprint-aware xfail. If a known-bad matcher hits this
     # DUT we wrap the test body in a try/except so:

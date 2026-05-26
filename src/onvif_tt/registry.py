@@ -33,6 +33,10 @@ class Implementation:
     mandatory: bool = False
     requires_services: set[str] = field(default_factory=set)
     tags: set[str] = field(default_factory=set)
+    # If True, this test mutates persistent DUT state (motor actuation,
+    # configuration change, reboot, factory reset, …). Runner skips it
+    # unless the operator passes ``--allow-writes`` on the run command.
+    requires_writes: bool = False
     # Each entry is a matcher dict against ``GetDeviceInformation`` fields,
     # plus a ``reason`` string. Example::
     #
@@ -60,6 +64,7 @@ def register(
     requires_services: set[str] | None = None,
     tags: set[str] | None = None,
     xfail_on: list[dict[str, Any]] | None = None,
+    requires_writes: bool = False,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator: register a callable as the implementation of ``test_id``.
 
@@ -92,6 +97,7 @@ def register(
             requires_services=set(requires_services or ()),
             tags=set(tags or ()),
             xfail_on=list(xfail_on or ()),
+            requires_writes=requires_writes,
         )
         return func
 

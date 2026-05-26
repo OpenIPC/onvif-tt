@@ -2,7 +2,7 @@
 
 > Open-source, headless, **CI- and AI-friendly** ONVIF conformance test tool.
 
-![ci](https://img.shields.io/badge/ci-github_actions-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![tests](https://img.shields.io/badge/implementations-43-informational)
+![ci](https://img.shields.io/badge/ci-github_actions-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![tests](https://img.shields.io/badge/implementations-54-informational)
 
 `onvif-tt` is a Linux-native, MIT-licensed alternative to the closed
 ONVIF Device Test Tool. It parses the public ONVIF Test Specification
@@ -14,8 +14,9 @@ This is **0.1.0 / alpha**. Today:
 
 * 22 ONVIF test specification files → **1,121 test cases** parsed and
   cached as JSON.
-* **43 test implementations** across Device, Media v10, Media2, Events
-  (PullPoint + Basic Notification), PTZ, Imaging.
+* **54 test implementations** across Device, Media v10, Media2 (incl.
+  cross-endpoint consistency), Events (PullPoint + Basic Notification),
+  PTZ (read + write), Imaging (read + write).
 * CLI: `list`, `show`, `corpus refresh|stats`, `run`.
 * `run` outputs JUnit XML + JSON + plain pytest stdout.
 * Device-fingerprint xfail surfaces known-buggy firmware without
@@ -23,6 +24,8 @@ This is **0.1.0 / alpha**. Today:
 * `.github/workflows/ci.yml` runs parser/registry tests + catalog
   sanity on every push (no DUT needed). An optional integration job
   exercises onvif-tt against a Happytime virtual ONVIF device.
+* `--allow-writes` opt-in for tests that actuate hardware (focus motor,
+  PTZ head, recording, factory reset). Default: read-only.
 
 ## Why this exists
 

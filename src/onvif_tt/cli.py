@@ -218,6 +218,8 @@ def _cmd_run(args, unknown_args) -> int:
         pytest_args.append(f"--id-glob={g}")
     if args.mandatory_only:
         pytest_args.append("--mandatory-only")
+    if args.allow_writes:
+        pytest_args.append("--allow-writes")
     if args.junit_xml:
         pytest_args.append(f"--junit-xml={args.junit_xml}")
     if args.json_report:
@@ -270,6 +272,9 @@ def _build_parser() -> argparse.ArgumentParser:
     rp.add_argument("--profile", action="append")
     rp.add_argument("--id-glob", action="append")
     rp.add_argument("--mandatory-only", action="store_true")
+    rp.add_argument("--allow-writes", action="store_true",
+                    help="enable tests that mutate DUT state (motors, "
+                         "config, reboot, factory reset)")
     rp.add_argument("--junit-xml")
     rp.add_argument("--json-report")
     rp.add_argument("--corpus-dir")
