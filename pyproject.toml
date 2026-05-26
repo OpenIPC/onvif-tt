@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "onvif-tt"
+version = "0.1.0"
+description = "Open-source, headless, CI- and AI-friendly ONVIF conformance test tool."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "onvif-tt contributors" }]
+keywords = ["onvif", "test", "conformance", "ip-camera", "rtsp"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Multimedia :: Video",
+    "Topic :: System :: Networking",
+    "Topic :: Software Development :: Testing",
+]
+dependencies = [
+    "lxml>=5",
+    "zeep>=4.2",
+    "onvif-zeep>=0.2",
+    "WSDiscovery>=2.0",
+    "pytest>=8",
+    "pytest-xdist>=3",
+    "pydantic>=2",
+]
+
+[project.scripts]
+onvif-tt = "onvif_tt.cli:main"
+
+[project.entry-points.pytest11]
+onvif_tt_runner = "onvif_tt.runner.plugin"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+onvif_tt = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -q"
