@@ -1,14 +1,41 @@
-"""First slice of Profile S implementations from BASE.html / MEDIA2.html.
+"""Profile S/T implementations from BASE.html.
 
 Hand-written; one function per spec ID. IDs verified against the parsed
 corpus (``onvif-tt show <id>``) — *do not invent IDs*; copy them from
 the catalog or you'll point at the wrong test.
+
+Calling-convention note: python-onvif-zeep wrappers take *positional*
+WSDL parameters — ``GetServices(False)``, ``GetCapabilities("All")``.
 """
 
 from __future__ import annotations
 
+import pytest
+import zeep.exceptions
+
 from ..registry import register
 from ..runtime.dut import DUT
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+_DEVICE_NS = "http://www.onvif.org/ver10/device/wsdl"
+_MEDIA_NS = "http://www.onvif.org/ver10/media/wsdl"
+_MEDIA2_NS = "http://www.onvif.org/ver20/media/wsdl"
+_EVENTS_NS = "http://www.onvif.org/ver10/events/wsdl"
+_PTZ_NS = "http://www.onvif.org/ver20/ptz/wsdl"
+_IMAGING_NS = "http://www.onvif.org/ver20/imaging/wsdl"
+_ANALYTICS_NS = "http://www.onvif.org/ver20/analytics/wsdl"
+
+
+def _service_by_ns(services, ns: str):
+    """Return the entry from a GetServices response matching ``ns``, or None."""
+    for s in services or []:
+        if s.Namespace == ns:
+            return s
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -98,3 +125,151 @@ def test_get_profiles_media2(dut: DUT, spec) -> None:
     p = profiles[0]
     assert p.token, "first media2 profile missing token"
     assert p.Name, "first media2 profile missing Name"
+
+
+# ---------------------------------------------------------------------------
+# BASE — capability section presence (DEVICE-1-1-3..10)
+#
+# Each test asserts that the named Capability section is populated when
+# the DUT advertises that service in GetServices. Skip otherwise.
+# ---------------------------------------------------------------------------
+
+@register("DEVICE-1-1-3", profiles={"S", "T"}, mandatory=True,
+          requires_services={"devicemgmt"})
+def test_device_capabilities(dut: DUT, spec) -> None:
+    """BASE.html#tc.DEVICE-1-1-3 — DEVICE CAPABILITIES.
+
+    GetCapabilities(Category=Device) must return a Device section whose
+    XAddr is a syntactically valid URI.
+    """
+    caps = dut.devicemgmt.GetCapabilities("Device")
+    assert caps is not None, "GetCapabilities returned None"
+    assert caps.Device is not None, "Device capability section missing"
+    xaddr = caps.Device.XAddr or ""
+    assert xaddr.startswith(("http://", "https://")), (
+        f"Device.XAddr is not a valid URI: {xaddr!r}"
+    )
+
+
+@register("DEVICE-1-1-4", profiles={"S"}, mandatory=False,
+          requires_services={"devicemgmt", "media"})
+def test_media_capabilities(dut: DUT, spec) -> None:
+    """BASE.html#tc.DEVICE-1-1-4 — MEDIA CAPABILITIES."""
+    caps = dut.devicemgmt.GetCapabilities("Media")
+    assert caps is not None
+    assert caps.Media is not None, "Media capability section missing"
+    xaddr = caps.Media.XAddr or ""
+    assert xaddr.startswith(("http://", "https://")), (
+        f"Media.XAddr is not a valid URI: {xaddr!r}"
+    )
+
+
+@register("DEVICE-1-1-5", profiles={"S", "T"}, mandatory=True,
+          requires_services={"devicemgmt", "events"})
+def test_event_capabilities(dut: DUT, spec) -> None:
+    """BASE.html#tc.DEVICE-1-1-5 — EVENT CAPABILITIES."""
+    caps = dut.devicemgmt.GetCapabilities("Events")
+    assert caps is not None
+    assert caps.Events is not None, "Events capability section missing"
+    xaddr = caps.Events.XAddr or ""
+    assert xaddr.startswith(("http://", "https://")), (
+        f"Events.XAddr is not a valid URI: {xaddr!r}"
+    )
+
+
+@register("DEVICE-1-1-6", profiles={"S"}, mandatory=False,
+          requires_services={"devicemgmt", "ptz"})
+def test_ptz_capabilities(dut: DUT, spec) -> None:
+    """BASE.html#tc.DEVICE-1-1-6 — PTZ CAPABILITIES."""
+    caps = dut.devicemgmt.GetCapabilities("PTZ")
+    assert caps is not None
+    assert caps.PTZ is not None, "PTZ capability section missing"
+    xaddr = caps.PTZ.XAddr or ""
+    assert xaddr.startswith(("http://", "https://")), (
+        f"PTZ.XAddr is not a valid URI: {xaddr!r}"
+    )
+
+
+@register("DEVICE-1-1-10", profiles={"S", "T"}, mandatory=False,
+          requires_services={"devicemgmt", "imaging"})
+def test_imaging_capabilities(dut: DUT, spec) -> None:
+    """BASE.html#tc.DEVICE-1-1-10 — IMAGING CAPABILITIES."""
+    caps = dut.devicemgmt.GetCapabilities("Imaging")
+    assert caps is not None
+    assert caps.Imaging is not None, "Imaging capability section missing"
+    xaddr = caps.Imaging.XAddr or ""
+    assert xaddr.startswith(("http://", "https://")), (
+        f"Imaging.XAddr is not a valid URI: {xaddr!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# BASE — GetServices selectivity (DEVICE-1-1-14..17)
+# ---------------------------------------------------------------------------
+
+@register("DEVICE-1-1-14", profiles={"S"}, mandatory=False,
+          requires_services={"devicemgmt", "media"})
+def test_get_services_media(dut: DUT, spec) -> None:
+    """BASE.html#tc.DEVICE-1-1-14 — GetServices includes Media service."""
+    services = dut.devicemgmt.GetServices(False)
+    s = _service_by_ns(services, _MEDIA_NS)
+    assert s is not None, "Media service missing from GetServices"
+    assert s.XAddr, "Media service XAddr empty"
+    # IncludeCapability=False ⇒ Capabilities must not be present
+    assert getattr(s, "Capabilities", None) is None, (
+        "GetServices(False) returned Capabilities for media service"
+    )
+
+
+@register("DEVICE-1-1-16", profiles={"S", "T"}, mandatory=True,
+          requires_services={"devicemgmt", "events"})
+def test_get_services_events(dut: DUT, spec) -> None:
+    """BASE.html#tc.DEVICE-1-1-16 — GetServices includes Events service."""
+    services = dut.devicemgmt.GetServices(False)
+    s = _service_by_ns(services, _EVENTS_NS)
+    assert s is not None, "Events service missing from GetServices"
+    assert s.XAddr, "Events service XAddr empty"
+
+
+@register("DEVICE-1-1-17", profiles={"S", "T"}, mandatory=False,
+          requires_services={"devicemgmt", "imaging"})
+def test_get_services_imaging(dut: DUT, spec) -> None:
+    """BASE.html#tc.DEVICE-1-1-17 — GetServices includes Imaging service."""
+    services = dut.devicemgmt.GetServices(False)
+    s = _service_by_ns(services, _IMAGING_NS)
+    assert s is not None, "Imaging service missing from GetServices"
+    assert s.XAddr, "Imaging service XAddr empty"
+
+
+@register("DEVICE-1-1-31", profiles={"S", "T"}, mandatory=True,
+          requires_services={"devicemgmt"})
+def test_get_services_xaddr_valid(dut: DUT, spec) -> None:
+    """BASE.html#tc.DEVICE-1-1-31 — every advertised XAddr is a URI."""
+    services = dut.devicemgmt.GetServices(False)
+    assert services
+    for s in services:
+        assert s.XAddr, f"empty XAddr for {s.Namespace}"
+        assert s.XAddr.startswith(("http://", "https://")), (
+            f"non-URI XAddr for {s.Namespace}: {s.XAddr!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# BASE — SOAP fault on invalid request (DEVICE-1-1-9)
+# ---------------------------------------------------------------------------
+
+@register("DEVICE-1-1-9", profiles={"S", "T"}, mandatory=True,
+          requires_services={"devicemgmt"})
+def test_soap_fault_on_invalid_capability(dut: DUT, spec) -> None:
+    """BASE.html#tc.DEVICE-1-1-9 — DUT returns SOAP 1.2 fault for an
+    invalid GetCapabilities category.
+    """
+    try:
+        dut.devicemgmt.GetCapabilities("ThisIsNotARealCategory")
+    except zeep.exceptions.Fault:
+        return  # pass — fault is what the spec demands
+    except Exception as exc:
+        pytest.fail(
+            f"expected a SOAP Fault, got {type(exc).__name__}: {exc}"
+        )
+    pytest.fail("DUT accepted invalid GetCapabilities category without fault")
