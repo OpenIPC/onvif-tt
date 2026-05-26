@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.org/onvif-tt/results.json.schema.json",
+  "title": "onvif-tt run results",
+  "description": "Structured output emitted by `onvif-tt run --json-report <file>`. One JSON object per run. LLM agents read `results[]` to interpret outcomes and use `last_request` / `last_response` for follow-up reasoning.",
+  "type": "object",
+  "required": ["summary", "results"],
+  "properties": {
+    "target": {
+      "description": "DUT host[:port] the run was pointed at. May be null when the runner ran without --target.",
+      "type": ["string", "null"]
+    },
+    "summary": {
+      "type": "object",
+      "required": ["total", "passed", "failed", "skipped"],
+      "properties": {
+        "total": { "type": "integer", "minimum": 0 },
+        "passed": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "skipped": { "type": "integer", "minimum": 0 },
+        "error": { "type": "integer", "minimum": 0 },
+        "xfailed": { "type": "integer", "minimum": 0 },
+        "xpassed": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "results": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Result" }
+    }
+  },
+  "$defs": {
+    "Result": {
+      "type": "object",
+      "required": ["id", "status", "duration_s"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Spec test ID (e.g. DEVICE-1-1-2) or LOCAL-* for tool-author tests.",
+          "pattern": "^[A-Z][A-Z0-9_]+-.+"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["passed", "failed", "skipped", "error", "xfailed", "xpassed"]
+        },
+        "duration_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Wall-clock seconds spent in the test body."
+        },
+        "longrepr": {
+          "type": "string",
+          "description": "pytest's failure or skip representation. Empty for clean passes."
+        },
+        "xfail_reason": {
+          "type": ["string", "null"],
+          "description": "Set when status is xfailed/xpassed; mirrors the reason attached to the test's xfail_on matcher."
+        },
+        "profiles": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["S", "T", "G", "M", "D", "A", "Q"] },
+          "description": "ONVIF Profiles this test claims to validate."
+        },
+        "mandatory": {
+          "type": "boolean",
+          "description": "True if the test is mandatory under at least one of its profiles."
+        },
+        "last_request": {
+          "type": ["string", "null"],
+          "description": "Pretty-printed XML of the last SOAP request the DUT received in this test. Useful for LLM-driven debugging."
+        },
+        "last_response": {
+          "type": ["string", "null"],
+          "description": "Pretty-printed XML of the last SOAP response the DUT sent in this test."
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

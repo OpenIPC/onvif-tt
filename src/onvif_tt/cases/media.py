@@ -306,6 +306,63 @@ def test_media2_get_stream_uri(dut: DUT, spec) -> None:
     assert _RTSP_RE.match(uri), f"Media2.GetStreamUri returned non-RTSP: {uri!r}"
 
 
+@register("LOCAL-MEDIA2-RTSP-LIVE", profiles={"T"}, mandatory=False,
+          requires_services={"devicemgmt", "media2"},
+          tags={"local", "network", "requires_ffprobe"})
+def test_media2_rtsp_decodes(dut: DUT, spec) -> None:
+    """End-to-end decode signal for Media2 / Profile T (H.264 or H.265).
+
+    Mirrors the Media v10 ffprobe test (``LOCAL-MEDIA-S-RTSP-LIVE``)
+    but uses Media2's flat ``GetStreamUri(Protocol, ProfileToken)``
+    signature. Pulls a single video frame via ffprobe to confirm the
+    advertised RTSP URL really plays.
+    """
+    if shutil.which("ffprobe") is None:
+        pytest.skip("ffprobe not installed")
+    profiles = dut.media2.GetProfiles() or []
+    if not profiles:
+        pytest.skip("no media2 profiles")
+    profile_token = profiles[0].token
+
+    req = dut.media2.create_type("GetStreamUri")
+    req.Protocol = "RtspUnicast"
+    req.ProfileToken = profile_token
+    uri = dut.media2.GetStreamUri(req).Uri
+    assert uri, "Media2.GetStreamUri returned empty URI"
+
+    # Inject creds into the URL if it doesn't carry them — same pattern
+    # as the v10 test, kept duplicated rather than DRY'd to leave each
+    # case independently readable.
+    if "@" not in uri and dut.config.user:
+        from urllib.parse import urlparse, urlunparse
+        u = urlparse(uri)
+        netloc = f"{dut.config.user}:{dut.config.password}@{u.hostname}"
+        if u.port:
+            netloc += f":{u.port}"
+        uri = urlunparse(u._replace(netloc=netloc))
+
+    result = subprocess.run(
+        [
+            "ffprobe", "-hide_banner", "-v", "error",
+            "-rtsp_transport", "tcp",
+            "-timeout", "8000000",
+            "-show_streams", "-of", "default=noprint_wrappers=1:nokey=0",
+            uri,
+        ],
+        capture_output=True, text=True, timeout=15,
+    )
+    assert result.returncode == 0, (
+        f"ffprobe failed for Media2 stream: rc={result.returncode}\n"
+        f"stderr: {result.stderr[:500]}"
+    )
+    assert "codec_type=video" in result.stdout, (
+        f"no video stream in ffprobe output:\n{result.stdout[:500]}"
+    )
+    # Soft check: log the codec we got. Profile T should be H.264 or H.265.
+    codec_lines = [l for l in result.stdout.splitlines() if l.startswith("codec_name=")]
+    assert codec_lines, "ffprobe did not report a codec_name"
+
+
 @register("LOCAL-MEDIA2-H265-PROFILE", profiles={"T"}, mandatory=False,
           requires_services={"devicemgmt", "media2"},
           tags={"local"})

@@ -2,7 +2,7 @@
 
 > Open-source, headless, **CI- and AI-friendly** ONVIF conformance test tool.
 
-![ci](https://img.shields.io/badge/ci-github_actions-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![tests](https://img.shields.io/badge/implementations-54-informational)
+![ci](https://img.shields.io/badge/ci-github_actions-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![tests](https://img.shields.io/badge/implementations-66-informational)
 
 `onvif-tt` is a Linux-native, MIT-licensed alternative to the closed
 ONVIF Device Test Tool. It parses the public ONVIF Test Specification
@@ -14,9 +14,10 @@ This is **0.1.0 / alpha**. Today:
 
 * 22 ONVIF test specification files → **1,121 test cases** parsed and
   cached as JSON.
-* **54 test implementations** across Device, Media v10, Media2 (incl.
-  cross-endpoint consistency), Events (PullPoint + Basic Notification),
-  PTZ (read + write), Imaging (read + write).
+* **66 test implementations** across Device, Network, Auth, WS-Discovery,
+  Media v10, Media2 (incl. cross-endpoint consistency), Events
+  (PullPoint + Basic Notification), PTZ (read + write), Imaging
+  (read + write).
 * CLI: `list`, `show`, `corpus refresh|stats`, `run`.
 * `run` outputs JUnit XML + JSON + plain pytest stdout.
 * Device-fingerprint xfail surfaces known-buggy firmware without
@@ -194,6 +195,45 @@ emit stable schemas suitable for tool-use prompts. See
   document may copy, distribute, publish, or display this document so
   long as this copyright notice, license and disclaimer are retained
   with all copies of the document"). See `corpus/README.md`.
+
+## Honesty notes about the published ONVIF test corpus
+
+The plan that drove this repo called out a few test families that turned
+out not to match the v20.12 corpus exactly. For transparency:
+
+* **`AUTH-*` doesn't exist** in the catalog. Authentication conformance
+  is scattered across other tests' Pre-Requisite clauses. We provide
+  `LOCAL-AUTH-*` tests (wrong-password, anonymous-rejected) covering
+  the intent.
+* **`IPCONFIG-1-1-*` are write ops**, not read-only as the plan said —
+  every one of them invokes `SetNetworkInterfaces` and `SystemReboot`.
+  We provide `LOCAL-NETWORK-*` read-only equivalents
+  (GetNetworkInterfaces, GetDNS, GetNTP, GetHostname, GetDefaultGateway,
+  GetNetworkProtocols).
+* **The corpus doesn't carry per-test ONVIF Profile tags** — there's no
+  way to ask "which catalog entries are Profile S?" without a separate
+  PROFILES.html parser. `onvif-tt list --profile-area BASE` filters by
+  source file, not by ONVIF profile; the `--profile S` filter on `run`
+  uses the registry's own profile annotations.
+* **`DISCOVERY-2-1-1 / -2`** in the corpus are about XML-namespace
+  conformance on ProbeMatch envelopes — they need raw-envelope
+  inspection that `wsdiscovery` doesn't expose. We implement a softer
+  approximation plus `LOCAL-DISCOVERY-PROBE` (the actual "does
+  multicast Probe find the DUT?" smoke).
+
+`LOCAL-*` IDs are tool-author additions; everything else is the literal
+corpus ID.
+
+## Parallel execution
+
+`onvif-tt run … -n auto` (or any `-n N`) runs through `pytest-xdist`.
+The session-scoped DUT is constructed once per worker; SOAP envelopes
+are stashed on `item.user_properties` so the master-side JSON reporter
+can recover them after the workers send their reports back.
+
+Verified: 66-test run goes from ~52 s sequential to ~19 s with
+`-n 4` (~2.7× speedup) against the dlab reference camera, with the
+JSON summary identical.
 
 ## Conformance scope
 

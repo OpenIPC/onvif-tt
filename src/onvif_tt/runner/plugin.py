@@ -111,50 +111,86 @@ _results: list[dict[str, Any]] = []
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item, call):
+    """Worker-side: stash SOAP envelopes on the item's user_properties
+    so they travel back to master under xdist (workers and master are
+    separate processes; the global ``_results`` list isn't shared)."""
     outcome = yield
     rep = outcome.get_result()
-    # Record once per item:
-    #  - 'call' phase outcome for tests that ran (pass/fail/xfail/xpass)
-    #  - 'setup' phase outcome for tests that skipped or errored before call
-    if rep.when == "call":
-        pass  # always record
-    elif rep.when == "setup" and rep.outcome != "passed":
+    if rep.when != "call":
+        return
+    funcargs = getattr(item, "funcargs", None) or {}
+    dut = funcargs.get("dut")
+    if dut is not None:
+        # user_properties is the supported channel for worker→master
+        # data under xdist. Truncate envelopes to keep memory bounded.
+        req = (dut.last_request or "")[:8000] or None
+        resp = (dut.last_response or "")[:8000] or None
+        item.user_properties.append(("onvif_tt_last_request", req))
+        item.user_properties.append(("onvif_tt_last_response", resp))
+
+
+def pytest_runtest_logreport(report):
+    """Master-side hook (also runs in single-process mode). Receives
+    the report from the worker, including user_properties.
+
+    Records once per item:
+      - 'call' phase for tests that ran (pass / fail / xfail / xpass)
+      - 'setup' phase for tests that skipped or errored before call
+    """
+    if report.when == "call":
+        pass
+    elif report.when == "setup" and report.outcome != "passed":
         pass
     else:
         return
-    tid = _id_for_item(item)
+
+    tid = _id_for_report(report)
     if tid is None:
         return
 
-    # Distinguish xfail/xpass from plain skip/pass — pytest folds both
-    # into outcome="skipped"/"passed" with a wasxfail flag.
-    wasxfail = bool(getattr(rep, "wasxfail", False))
-    if wasxfail and rep.outcome == "skipped":
+    wasxfail = bool(getattr(report, "wasxfail", False))
+    if wasxfail and report.outcome == "skipped":
         status = "xfailed"
-    elif wasxfail and rep.outcome == "passed":
+    elif wasxfail and report.outcome == "passed":
         status = "xpassed"
     else:
-        status = rep.outcome
+        status = report.outcome
 
     rec: dict[str, Any] = {
         "id": tid,
         "status": status,
-        "duration_s": rep.duration,
-        "longrepr": str(rep.longrepr) if rep.longrepr else "",
+        "duration_s": report.duration,
+        "longrepr": str(report.longrepr) if report.longrepr else "",
     }
     if wasxfail:
-        rec["xfail_reason"] = str(getattr(rep, "wasxfail", "")) or None
+        rec["xfail_reason"] = str(getattr(report, "wasxfail", "")) or None
     impl = REGISTRY.get(tid)
     if impl:
         rec["profiles"] = sorted(impl.profiles)
         rec["mandatory"] = impl.mandatory
-    # SOAP traffic snapshot (best-effort).
-    funcargs = getattr(item, "funcargs", None) or {}
-    dut = funcargs.get("dut")
-    if dut is not None:
-        rec["last_request"] = dut.last_request
-        rec["last_response"] = dut.last_response
+
+    # Recover SOAP envelopes from user_properties (set worker-side).
+    props = dict(getattr(report, "user_properties", []) or [])
+    if "onvif_tt_last_request" in props:
+        rec["last_request"] = props["onvif_tt_last_request"]
+    if "onvif_tt_last_response" in props:
+        rec["last_response"] = props["onvif_tt_last_response"]
+
     _results.append(rec)
+
+
+def _id_for_report(report) -> str | None:
+    """Extract the parametrised ``test_id`` from a TestReport's nodeid.
+
+    Format is ``…dispatch.py::test_onvif_case[DEVICE-1-1-2]``. Returns
+    None for parser unit tests and other non-onvif items.
+    """
+    nodeid = getattr(report, "nodeid", "") or ""
+    if "test_onvif_case[" not in nodeid:
+        return None
+    start = nodeid.index("[") + 1
+    end = nodeid.rindex("]")
+    return nodeid[start:end]
 
 
 def pytest_sessionfinish(session, exitstatus):  # noqa: D401
