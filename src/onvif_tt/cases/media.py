@@ -193,6 +193,236 @@ def test_media_rtsp_decodes(dut: DUT, spec) -> None:
     )
 
 
+# ---------------------------------------------------------------------------
+# Deeper decoder-side conformance — assertions on what the encoder ACTUALLY
+# produces vs what GetProfiles claims. These have surfaced real vendor bugs
+# (e.g. Xiongmai stock advertising H264 High Profile but streaming Baseline).
+# ---------------------------------------------------------------------------
+
+def _ffprobe_video_stream(uri: str, transport: str = "tcp") -> dict[str, str]:
+    """Run ffprobe with key=value output for the first video stream.
+
+    Returns a dict of field→str. Raises pytest.skip if ffprobe isn't
+    installed or the URL doesn't open within ``timeout``.
+    """
+    if shutil.which("ffprobe") is None:
+        pytest.skip("ffprobe not installed")
+    result = subprocess.run(
+        [
+            "ffprobe", "-hide_banner", "-v", "error",
+            "-rtsp_transport", transport,
+            "-timeout", "8000000",
+            "-show_streams", "-select_streams", "v:0",
+            "-of", "default=noprint_wrappers=1:nokey=0",
+            uri,
+        ],
+        capture_output=True, text=True, timeout=15,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"ffprobe failed: {result.stderr[:200]}")
+    fields: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        if "=" in line:
+            k, _, v = line.partition("=")
+            fields[k] = v
+    if not fields:
+        pytest.skip("ffprobe returned no video-stream fields")
+    return fields
+
+
+def _authed_stream_uri(dut: DUT, profile_token: str) -> str:
+    """GetStreamUri for the profile, embed creds if missing."""
+    req = dut.media.create_type("GetStreamUri")
+    req.StreamSetup = {"Stream": "RTP-Unicast", "Transport": {"Protocol": "RTSP"}}
+    req.ProfileToken = profile_token
+    uri = dut.media.GetStreamUri(req).Uri
+    if "@" not in uri and dut.config.user:
+        from urllib.parse import urlparse, urlunparse
+        u = urlparse(uri)
+        netloc = f"{dut.config.user}:{dut.config.password}@{u.hostname}"
+        if u.port:
+            netloc += f":{u.port}"
+        uri = urlunparse(u._replace(netloc=netloc))
+    return uri
+
+
+@register("LOCAL-MEDIA-S-RESOLUTION-MATCHES-PROFILE", profiles={"S"},
+          mandatory=False,
+          requires_services={"devicemgmt", "media"},
+          tags={"local", "network", "requires_ffprobe"})
+def test_stream_resolution_matches_profile(dut: DUT, spec) -> None:
+    """The width × height ffprobe sees on the live stream must match
+    what GetProfiles advertised for that profile's VideoEncoder config.
+
+    A real-world conformance gap — vendors sometimes advertise a
+    resolution they can't actually deliver, or fall back silently
+    to a smaller capture when the sensor can't keep up.
+    """
+    profiles = dut.media.GetProfiles() or []
+    if not profiles:
+        pytest.skip("no profiles")
+    profile = profiles[0]
+    vec = getattr(profile, "VideoEncoderConfiguration", None)
+    if vec is None or vec.Resolution is None:
+        pytest.skip("profile lacks Resolution config")
+    advertised_w = int(vec.Resolution.Width)
+    advertised_h = int(vec.Resolution.Height)
+
+    uri = _authed_stream_uri(dut, profile.token)
+    fields = _ffprobe_video_stream(uri)
+    actual_w = int(fields.get("width", 0))
+    actual_h = int(fields.get("height", 0))
+    assert (actual_w, actual_h) == (advertised_w, advertised_h), (
+        f"profile {profile.token!r} advertises "
+        f"{advertised_w}x{advertised_h} but stream is {actual_w}x{actual_h}"
+    )
+
+
+@register("LOCAL-MEDIA-S-CODEC-MATCHES-PROFILE", profiles={"S"},
+          mandatory=False,
+          requires_services={"devicemgmt", "media"},
+          tags={"local", "network", "requires_ffprobe"},
+          xfail_on=[{
+              "Manufacturer": "H264",
+              "reason": "Xiongmai stock advertises H264Profile=High in "
+                        "GetProfiles but the actual H.264 SPS shows "
+                        "Baseline profile.",
+          }])
+def test_stream_codec_profile_matches(dut: DUT, spec) -> None:
+    """The H.264/H.265 profile the device claims must match the profile
+    ffprobe finds in the bitstream's SPS.
+
+    Surfaces a common vendor bug: advertise a fancy codec profile,
+    actually emit Baseline.
+    """
+    profiles = dut.media.GetProfiles() or []
+    if not profiles:
+        pytest.skip("no profiles")
+    profile = profiles[0]
+    vec = getattr(profile, "VideoEncoderConfiguration", None)
+    if vec is None:
+        pytest.skip("profile lacks VideoEncoderConfiguration")
+    encoding = getattr(vec, "Encoding", None)
+    if encoding != "H264":
+        pytest.skip(f"this test only covers H.264 (saw {encoding})")
+    h264 = getattr(vec, "H264", None)
+    advertised_profile = getattr(h264, "H264Profile", None) if h264 else None
+    if not advertised_profile:
+        pytest.skip("profile doesn't pin an H264Profile")
+
+    uri = _authed_stream_uri(dut, profile.token)
+    fields = _ffprobe_video_stream(uri)
+    actual_profile = fields.get("profile", "")
+    # Map ONVIF naming ("Main") to ffprobe naming ("Main") — they happen
+    # to align for the common values. Compare case-insensitive.
+    assert advertised_profile.lower() in actual_profile.lower(), (
+        f"profile {profile.token!r} advertises H264Profile="
+        f"{advertised_profile!r} but bitstream profile is "
+        f"{actual_profile!r}"
+    )
+
+
+@register("LOCAL-MEDIA-S-FRAME-RATE-WITHIN-TOLERANCE", profiles={"S"},
+          mandatory=False,
+          requires_services={"devicemgmt", "media"},
+          tags={"local", "network", "requires_ffprobe"})
+def test_stream_frame_rate_within_tolerance(dut: DUT, spec) -> None:
+    """ffprobe-reported r_frame_rate must be within ±25% of the
+    FrameRateLimit advertised in the profile's RateControl.
+
+    Tolerance is generous because RateControl.FrameRateLimit is a cap,
+    not an exact rate — but a 40% gap (20 → 12) is a vendor bug.
+    """
+    profiles = dut.media.GetProfiles() or []
+    if not profiles:
+        pytest.skip("no profiles")
+    profile = profiles[0]
+    vec = getattr(profile, "VideoEncoderConfiguration", None)
+    rc = getattr(vec, "RateControl", None) if vec else None
+    advertised_fps = getattr(rc, "FrameRateLimit", None) if rc else None
+    if not advertised_fps:
+        pytest.skip("profile lacks RateControl.FrameRateLimit")
+
+    uri = _authed_stream_uri(dut, profile.token)
+    fields = _ffprobe_video_stream(uri)
+    raw_rate = fields.get("r_frame_rate", "")
+    if "/" in raw_rate:
+        num, den = raw_rate.split("/")
+        try:
+            actual_fps = float(num) / float(den)
+        except (ValueError, ZeroDivisionError):
+            pytest.skip(f"ffprobe r_frame_rate not parseable: {raw_rate!r}")
+    else:
+        try:
+            actual_fps = float(raw_rate)
+        except ValueError:
+            pytest.skip(f"ffprobe r_frame_rate not parseable: {raw_rate!r}")
+
+    # ±25% window. FrameRateLimit is a cap, so "less" is fine but big
+    # under-delivery surfaces real hardware issues.
+    lo = advertised_fps * 0.75
+    hi = advertised_fps * 1.25
+    assert lo <= actual_fps <= hi, (
+        f"profile {profile.token!r} advertises {advertised_fps} fps "
+        f"but stream is {actual_fps:.1f} fps (window {lo:.1f}–{hi:.1f})"
+    )
+
+
+@register("LOCAL-MEDIA-S-PTS-MONOTONIC", profiles={"S"},
+          mandatory=False,
+          requires_services={"devicemgmt", "media"},
+          tags={"local", "network", "requires_ffprobe"})
+def test_stream_pts_monotonic(dut: DUT, spec) -> None:
+    """Read 30 frames from the live stream and verify their PTS (or DTS
+    when PTS is missing) values increase monotonically.
+
+    A common encoder bug is to emit wrap-around or backwards timestamps
+    when the internal clock rolls over — which then produces playback
+    glitches in any downstream consumer.
+    """
+    profiles = dut.media.GetProfiles() or []
+    if not profiles:
+        pytest.skip("no profiles")
+    profile = profiles[0]
+    uri = _authed_stream_uri(dut, profile.token)
+
+    if shutil.which("ffprobe") is None:
+        pytest.skip("ffprobe not installed")
+    result = subprocess.run(
+        [
+            "ffprobe", "-hide_banner", "-v", "error",
+            "-rtsp_transport", "tcp",
+            "-timeout", "8000000",
+            "-select_streams", "v:0",
+            "-show_entries", "frame=pts,dts,pkt_pts,pkt_dts",
+            "-read_intervals", "%+#30",
+            "-of", "csv=p=0",
+            uri,
+        ],
+        capture_output=True, text=True, timeout=20,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        pytest.skip(f"ffprobe frame dump failed: {result.stderr[:200]}")
+
+    timestamps: list[int] = []
+    for line in result.stdout.splitlines():
+        cells = [c for c in line.split(",") if c and c != "N/A"]
+        if not cells:
+            continue
+        try:
+            timestamps.append(int(cells[0]))
+        except ValueError:
+            continue
+    if len(timestamps) < 5:
+        pytest.skip(f"only {len(timestamps)} valid timestamps — sample too small")
+
+    for prev, curr in zip(timestamps, timestamps[1:]):
+        assert curr > prev, (
+            f"PTS sequence not strictly increasing: {prev} → {curr} "
+            f"(full window: {timestamps[:10]}…)"
+        )
+
+
 @register("LOCAL-MEDIA-S-SNAPSHOT-URI", profiles={"S"}, mandatory=False,
           requires_services={"devicemgmt", "media"},
           tags={"local"})

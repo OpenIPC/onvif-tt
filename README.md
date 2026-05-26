@@ -5,6 +5,7 @@
 [![ci](https://github.com/OpenIPC/onvif-tt/actions/workflows/ci.yml/badge.svg)](https://github.com/OpenIPC/onvif-tt/actions/workflows/ci.yml)
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![python](https://img.shields.io/badge/python-3.10%E2%80%933.13-blue)
+![tests](https://img.shields.io/badge/implementations-84-informational)
 
 `onvif-tt` is a Linux-native, MIT-licensed alternative to the closed
 ONVIF Device Test Tool. It parses the public ONVIF Test Specification
@@ -21,19 +22,24 @@ ONVIF-compliant device.
 
 * 22 ONVIF Test Specification files → **1,121 test cases** parsed into
   `corpus/parsed.json` with a deterministic-parse guard.
-* **66 test implementations** spanning:
-  * Device service (capabilities, GetServices, system commands, SOAP-fault
-    handling)
+* **84 test implementations** spanning:
+  * Device service (capabilities, GetServices, system commands incl.
+    `SetSystemDateAndTime` and `GetSystemLog`, SOAP-fault handling)
   * Network read-only (interfaces, DNS, NTP, gateway, protocols)
   * Authentication (valid creds, wrong password, anonymous-rejected)
   * WS-Discovery (multicast Probe, ProbeMatch validation)
   * Media v10 + Media2 (profiles, encoders, stream URI, snapshot,
-    end-to-end RTSP decode via `ffprobe`, cross-endpoint consistency)
+    cross-endpoint consistency, **deep-decoder checks**: resolution
+    matches profile, codec profile matches SPS, frame rate within
+    tolerance, PTS monotonicity — all via `ffprobe` on the live stream)
   * Events — PullPoint and Basic Notification lifecycles, with a
     subscription tracker that auto-unsubscribes on teardown
   * PTZ (nodes, AbsoluteMove / RelativeMove / ContinuousMove / Stop)
   * Imaging (settings, options, MoveOptions, Status, Absolute /
     Relative / Continuous focus moves)
+  * **Profile G** — Recording control + capabilities, Recording Search
+    (`FindRecordings`, `GetRecordingSummary`, `EndSearch`-fault),
+    Replay (`GetReplayUri`)
 * Read-only by default. Tests that actuate hardware (motors, recording,
   factory reset) opt in via `--allow-writes`.
 * Device-fingerprint **`xfail_on`** surfaces known-buggy firmware

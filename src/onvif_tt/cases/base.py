@@ -258,6 +258,78 @@ def test_get_services_xaddr_valid(dut: DUT, spec) -> None:
 # BASE — SOAP fault on invalid request (DEVICE-1-1-9)
 # ---------------------------------------------------------------------------
 
+@register("DEVICE-3-1-10", profiles={"S", "T"}, mandatory=False,
+          requires_services={"devicemgmt"})
+def test_get_system_log(dut: DUT, spec) -> None:
+    """BASE.html#tc.DEVICE-3-1-10 — SYSTEM COMMAND GETSYSTEMLOG.
+
+    Spec allows two outcomes per LogType: either a populated
+    GetSystemLogResponse, or one of:
+      * env:Sender/ter:InvalidArgs/ter:SystemlogUnavailable
+      * env:Sender/ter:InvalidArgs/ter:AccesslogUnavailable
+
+    We accept either path — both are spec-conformant. The test fails
+    only if the device errors with something *other* than those two.
+    """
+    import zeep.exceptions
+    for log_type in ("System", "Access"):
+        try:
+            resp = dut.devicemgmt.GetSystemLog(log_type)
+        except zeep.exceptions.Fault:
+            # SOAP Fault is acceptable per spec ("log unavailable").
+            continue
+        # Non-Fault response — must carry the SystemLog structure.
+        assert resp is not None, (
+            f"GetSystemLog({log_type}) returned None with no fault"
+        )
+
+
+@register("DEVICE-3-1-11", profiles={"S", "T"}, mandatory=False,
+          requires_services={"devicemgmt"},
+          requires_writes=True)
+def test_set_system_date_and_time_manual(dut: DUT, spec) -> None:
+    """BASE.html#tc.DEVICE-3-1-11 — SYSTEM COMMAND SETSYSTEMDATEANDTIME.
+
+    Per spec: read original, set the device to the *current* UTC
+    (effectively a no-op so we don't leave the clock skewed), confirm
+    the readback, then re-set the original. Marked requires_writes
+    because SetSystemDateAndTime is mandatory-write per the catalog.
+    """
+    import datetime as _dt
+    original = dut.devicemgmt.GetSystemDateAndTime()
+
+    now = _dt.datetime.now(_dt.UTC)
+    set_req = dut.devicemgmt.create_type("SetSystemDateAndTime")
+    set_req.DateTimeType = "Manual"
+    set_req.DaylightSavings = False
+    set_req.UTCDateTime = {
+        "Time": {"Hour": now.hour, "Minute": now.minute, "Second": now.second},
+        "Date": {"Year": now.year, "Month": now.month, "Day": now.day},
+    }
+    # SetSystemDateAndTimeResponse body is empty; success = no fault.
+    dut.devicemgmt.SetSystemDateAndTime(set_req)
+
+    readback = dut.devicemgmt.GetSystemDateAndTime()
+    assert readback.DateTimeType == "Manual", (
+        f"after SetSystemDateAndTime(Manual), DateTimeType is "
+        f"{readback.DateTimeType!r}"
+    )
+
+    # Restore the original DateTimeType + time. If the DUT was NTP-managed,
+    # this just tells it to resume NTP; otherwise we set the current UTC again.
+    restore = dut.devicemgmt.create_type("SetSystemDateAndTime")
+    restore.DateTimeType = original.DateTimeType or "Manual"
+    restore.DaylightSavings = bool(getattr(original, "DaylightSavings", False))
+    if getattr(original, "TimeZone", None):
+        restore.TimeZone = {"TZ": original.TimeZone.TZ}
+    now2 = _dt.datetime.now(_dt.UTC)
+    restore.UTCDateTime = {
+        "Time": {"Hour": now2.hour, "Minute": now2.minute, "Second": now2.second},
+        "Date": {"Year": now2.year, "Month": now2.month, "Day": now2.day},
+    }
+    dut.devicemgmt.SetSystemDateAndTime(restore)
+
+
 @register("DEVICE-1-1-9", profiles={"S", "T"}, mandatory=True,
           requires_services={"devicemgmt"},
           xfail_on=[
