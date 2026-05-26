@@ -4,20 +4,34 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "onvif-tt"
-version = "0.1.0"
+version = "0.2.0"
 description = "Open-source, headless, CI- and AI-friendly ONVIF conformance test tool."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "onvif-tt contributors" }]
-keywords = ["onvif", "test", "conformance", "ip-camera", "rtsp"]
+authors = [{ name = "OpenIPC contributors" }]
+keywords = ["onvif", "test", "conformance", "ip-camera", "rtsp", "openipc"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "License :: OSI Approved :: MIT License",
     "Topic :: Multimedia :: Video",
     "Topic :: System :: Networking",
     "Topic :: Software Development :: Testing",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
+
+[project.urls]
+Homepage = "https://github.com/OpenIPC/onvif-tt"
+Repository = "https://github.com/OpenIPC/onvif-tt"
+Issues = "https://github.com/OpenIPC/onvif-tt/issues"
+OpenIPC = "https://openipc.org"
 dependencies = [
     "lxml>=5",
     "zeep>=4.2",
