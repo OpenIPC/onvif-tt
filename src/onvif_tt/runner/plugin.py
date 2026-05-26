@@ -128,6 +128,18 @@ def pytest_runtest_makereport(item, call):
         item.user_properties.append(("onvif_tt_last_request", req))
         item.user_properties.append(("onvif_tt_last_response", resp))
 
+        # WS-Addressing violations recorded during this test by the
+        # WSAValidator zeep plugin. Serialise as list of dicts so the
+        # master-side reporter can drop them straight into JSON.
+        wsa = [
+            {"operation": v.operation, "code": v.code, "detail": v.detail}
+            for v in (getattr(dut.session, "wsa_violations", []) or [])
+        ]
+        item.user_properties.append(("onvif_tt_wsa_violations", wsa))
+        # Clear so the next test starts with a fresh slate (DUT is
+        # session-scoped, the violation list otherwise accumulates).
+        dut.session.wsa_violations.clear()
+
 
 def pytest_runtest_logreport(report):
     """Master-side hook (also runs in single-process mode). Receives
@@ -169,12 +181,17 @@ def pytest_runtest_logreport(report):
         rec["profiles"] = sorted(impl.profiles)
         rec["mandatory"] = impl.mandatory
 
-    # Recover SOAP envelopes from user_properties (set worker-side).
+    # Recover SOAP envelopes + WS-Addressing violations from
+    # user_properties (set worker-side).
     props = dict(getattr(report, "user_properties", []) or [])
     if "onvif_tt_last_request" in props:
         rec["last_request"] = props["onvif_tt_last_request"]
     if "onvif_tt_last_response" in props:
         rec["last_response"] = props["onvif_tt_last_response"]
+    if "onvif_tt_wsa_violations" in props:
+        wsa = props["onvif_tt_wsa_violations"] or []
+        if wsa:
+            rec["wsa_violations"] = wsa
 
     _results.append(rec)
 

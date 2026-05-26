@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .soap_trace import SoapTrace
+from .wsa_validator import WSAValidator, WSAViolation
 
 log = logging.getLogger(__name__)
 
@@ -73,6 +74,7 @@ class DUTSession:
         default_factory=lambda: collections.deque(maxlen=64)
     )
     subscriptions: list[Any] = field(default_factory=list)
+    wsa_violations: list[WSAViolation] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -127,10 +129,11 @@ class PullPointHandle:
             portType="SubscriptionManager",
             binding_name=f"{self._EVENT_NS}SubscriptionManagerBinding",
         )
-        # Attach SOAP trace plugin to both.
+        # Attach SOAP trace + WS-Addressing validator plugins to both.
         for svc in (self._pull, self._mgr):
             try:
                 svc.zeep_client.plugins.append(dut._trace)
+                svc.zeep_client.plugins.append(dut._wsa)
             except AttributeError:
                 pass
 
@@ -206,6 +209,7 @@ class NotifyHandle:
         )
         try:
             self._mgr.zeep_client.plugins.append(dut._trace)
+            self._mgr.zeep_client.plugins.append(dut._wsa)
         except AttributeError:
             pass
         dut.session.subscriptions.append(self)
@@ -243,6 +247,8 @@ class DUT:
         self.config = config
         self.session = DUTSession()
         self._trace = SoapTrace(self.session.soap_traces)
+        self._wsa = WSAValidator()
+        self._wsa.attach(self.session.wsa_violations)
         # We pass our zeep plugin through ONVIFCamera's transport kwargs.
         kwargs: dict[str, Any] = {}
         if config.wsdl_dir:
@@ -272,12 +278,13 @@ class DUT:
                 else:
                     factory = getattr(self._camera, spec)
                     svc = factory()
-                # Inject our trace plugin into the underlying zeep client.
+                # Inject trace + WS-Addressing validator plugins.
                 try:
                     svc.zeep_client.plugins.append(self._trace)
+                    svc.zeep_client.plugins.append(self._wsa)
                 except AttributeError:
                     # Older onvif-zeep — plugin list may live elsewhere.
-                    log.debug("Could not attach SoapTrace to %s", name)
+                    log.debug("Could not attach plugins to %s", name)
                 self._services[name] = svc
             return svc
         raise AttributeError(name)
@@ -339,6 +346,7 @@ class DUT:
         )
         try:
             np.zeep_client.plugins.append(self._trace)
+            np.zeep_client.plugins.append(self._wsa)
         except AttributeError:
             pass
         resp = np.Subscribe({
