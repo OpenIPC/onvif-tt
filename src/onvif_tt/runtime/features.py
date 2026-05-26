@@ -44,3 +44,26 @@ def discover_services(dut: DUT) -> dict[str, str]:
         short = _NS_TO_SHORT.get(s.Namespace, s.Namespace)
         dut.session.services[short] = s.XAddr
     return dut.session.services
+
+
+def discover_device_info(dut: DUT) -> dict[str, str]:
+    """Populate ``dut.session.device_info`` from ``GetDeviceInformation``.
+
+    Cached after the first call. Used by the ``xfail_on`` matcher to
+    decide whether a test is expected to fail on this particular DUT.
+    Returns an empty dict if the call fails (e.g. anonymous-disabled).
+    """
+    if dut.session.device_info:
+        return dut.session.device_info
+    try:
+        resp = dut.devicemgmt.GetDeviceInformation()
+    except Exception as exc:
+        log.warning("GetDeviceInformation failed on %s: %s", dut.config.host, exc)
+        return dut.session.device_info
+    # zeep gives us a struct with attribute access; expose as plain dict.
+    for k in ("Manufacturer", "Model", "FirmwareVersion",
+              "SerialNumber", "HardwareId"):
+        v = getattr(resp, k, None)
+        if v is not None:
+            dut.session.device_info[k] = str(v)
+    return dut.session.device_info

@@ -259,7 +259,17 @@ def test_get_services_xaddr_valid(dut: DUT, spec) -> None:
 # ---------------------------------------------------------------------------
 
 @register("DEVICE-1-1-9", profiles={"S", "T"}, mandatory=True,
-          requires_services={"devicemgmt"})
+          requires_services={"devicemgmt"},
+          xfail_on=[
+              {
+                  "Manufacturer": "H264",
+                  "reason": "Xiongmai stock firmware (Manufacturer=H264) "
+                            "closes the TCP connection on invalid "
+                            "GetCapabilities Category instead of returning "
+                            "a SOAP 1.2 Fault. Tracked in kaeru: three-"
+                            "xiongmai-stock-firmware-onvif-non-conformances.",
+              },
+          ])
 def test_soap_fault_on_invalid_capability(dut: DUT, spec) -> None:
     """BASE.html#tc.DEVICE-1-1-9 — DUT returns SOAP 1.2 fault for an
     invalid GetCapabilities category.

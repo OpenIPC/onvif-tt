@@ -44,7 +44,15 @@ def test_ptz_get_node(dut: DUT, spec) -> None:
 
 
 @register("PTZ-1-1-4", profiles={"S"}, mandatory=False,
-          requires_services={"devicemgmt", "ptz"})
+          requires_services={"devicemgmt", "ptz"},
+          xfail_on=[
+              {
+                  "Manufacturer": "H264",
+                  "reason": "Xiongmai stock firmware (Manufacturer=H264) "
+                            "closes the TCP connection on invalid PTZ node "
+                            "token instead of returning a SOAP Fault.",
+              },
+          ])
 def test_ptz_soap_fault_invalid_node(dut: DUT, spec) -> None:
     """PTZ.html#tc.PTZ-1-1-4 — PTZ SOAP FAULT MESSAGE.
 

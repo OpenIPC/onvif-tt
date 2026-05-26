@@ -13,9 +13,9 @@ import inspect
 
 import pytest
 
-from ..registry import REGISTRY, discover
+from ..registry import REGISTRY, discover, match_xfail
 from ..runtime.dut import DUT, DUTConfig
-from ..runtime.features import discover_services
+from ..runtime.features import discover_device_info, discover_services
 from ..specs.parser import parse_corpus
 
 # Populate REGISTRY at collection time.
@@ -68,6 +68,14 @@ def _services(dut):
         return {}
 
 
+@pytest.fixture(scope="session")
+def _device_info(dut):
+    try:
+        return discover_device_info(dut)
+    except Exception:
+        return {}
+
+
 @pytest.fixture
 def spec(request, _corpus_by_id):
     test_id = request.node.callspec.params["test_id"]
@@ -84,13 +92,20 @@ def _all_ids():
 
 
 @pytest.mark.parametrize("test_id", _all_ids() or ["__no_tests_registered__"])
-def test_onvif_case(test_id, dut, _services, spec, request):
+def test_onvif_case(test_id, dut, _services, _device_info, spec, request):
     if test_id == "__no_tests_registered__":
         pytest.skip("No ONVIF tests registered in REGISTRY")
     impl = REGISTRY[test_id]
     missing = impl.requires_services - set(_services)
     if missing:
         pytest.skip(f"DUT does not advertise services: {sorted(missing)}")
+
+    # Device-fingerprint-aware xfail. If a known-bad matcher hits this
+    # DUT we wrap the test body in a try/except so:
+    #   - real failure → XFAIL (CI green)
+    #   - unexpected pass → XPASS, surfaced as a warning ("device fixed it!")
+    xfail_reason = match_xfail(impl, _device_info)
+
     sig = inspect.signature(impl.func)
     kwargs = {}
     if "dut" in sig.parameters:
@@ -99,7 +114,29 @@ def test_onvif_case(test_id, dut, _services, spec, request):
         kwargs["spec"] = spec
     if "request" in sig.parameters:
         kwargs["request"] = request
-    impl.func(**kwargs)
+
+    if xfail_reason is None:
+        impl.func(**kwargs)
+        return
+
+    try:
+        impl.func(**kwargs)
+    except BaseException as exc:  # noqa: BLE001
+        # Pytest's outcome exceptions (pytest.fail / pytest.skip) inherit
+        # from BaseException, not Exception — so a plain `except Exception`
+        # would miss them. We also re-raise truly fatal control-flow
+        # exceptions (KeyboardInterrupt / SystemExit) so Ctrl-C still works.
+        if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+            raise
+        pytest.xfail(f"{xfail_reason} | {type(exc).__name__}: {exc}")
+    # Reached only if the test passed. Surface as XPASS-style warning so
+    # CI is alerted that the device might have been fixed.
+    import warnings
+    warnings.warn(
+        f"XPASS for {impl.test_id}: expected failure on this DUT "
+        f"({xfail_reason!r}) but the test passed.",
+        stacklevel=2,
+    )
 
 
 # Stash on each item so the plugin's reporter can find the test_id.

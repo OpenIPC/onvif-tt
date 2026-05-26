@@ -63,6 +63,7 @@ class DUTSession:
 
     services: dict[str, str] = field(default_factory=dict)  # name → xaddr
     capabilities: Any | None = None
+    device_info: dict[str, Any] = field(default_factory=dict)
     soap_traces: collections.deque[tuple[str, str]] = field(
         default_factory=lambda: collections.deque(maxlen=64)
     )

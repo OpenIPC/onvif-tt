@@ -129,6 +129,30 @@ dut.devicemgmt.GetServices(IncludeCapability=False)   # ❌
 The same applies to every WSDL operation — read the spec procedure to
 get the parameter order.
 
+### Expected-failures on known-buggy devices
+
+If a test is known to fail on specific firmware, annotate it with
+`xfail_on` matchers — the runner will mark it `xfailed` instead of
+failing the whole CI run on that device:
+
+```python
+@register("DEVICE-1-1-9", profiles={"S", "T"}, mandatory=True,
+          requires_services={"devicemgmt"},
+          xfail_on=[{
+              "Manufacturer": "H264",
+              "reason": "Xiongmai stock closes the TCP connection "
+                        "instead of returning a SOAP 1.2 Fault.",
+          }])
+def test_soap_fault_on_invalid_capability(dut, spec): ...
+```
+
+Matchers compare against `GetDeviceInformation` fields (Manufacturer,
+Model, FirmwareVersion, SerialNumber, HardwareId). Values can be
+literals (case-sensitive equality) or callables (`lambda v: ...`).
+Multiple matchers OR together — any one matching expectations the
+failure. If a fixed-up device unexpectedly passes, the run logs an
+`xpassed` warning so you know the bug was repaired upstream.
+
 ## CI integration
 
 ```bash

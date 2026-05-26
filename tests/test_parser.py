@@ -75,3 +75,65 @@ def test_committed_cache_matches_live_parse():
     assert live == committed, (
         "corpus/parsed.json is out of date — run `onvif-tt corpus refresh`."
     )
+
+
+# ---------------------------------------------------------------------------
+# Registry / xfail_on matcher
+# ---------------------------------------------------------------------------
+
+def test_match_xfail_literal_match():
+    from onvif_tt.registry import Implementation, match_xfail
+
+    impl = Implementation(
+        test_id="T", func=lambda: None,
+        xfail_on=[{"Manufacturer": "H264", "reason": "ok"}],
+    )
+    assert match_xfail(impl, {"Manufacturer": "H264"}) == "ok"
+    assert match_xfail(impl, {"Manufacturer": "Axis"}) is None
+    assert match_xfail(impl, {}) is None
+
+
+def test_match_xfail_multi_key_and():
+    from onvif_tt.registry import Implementation, match_xfail
+
+    impl = Implementation(
+        test_id="T", func=lambda: None,
+        xfail_on=[{
+            "Manufacturer": "H264",
+            "Model": "HI3516EV300_85H50AI",
+            "reason": "narrow",
+        }],
+    )
+    info = {"Manufacturer": "H264", "Model": "HI3516EV300_85H50AI"}
+    assert match_xfail(impl, info) == "narrow"
+    # Model wrong → no match.
+    assert match_xfail(impl, {**info, "Model": "OTHER"}) is None
+
+
+def test_match_xfail_callable_predicate():
+    from onvif_tt.registry import Implementation, match_xfail
+
+    impl = Implementation(
+        test_id="T", func=lambda: None,
+        xfail_on=[{
+            "Model": lambda v: v and v.startswith("HI3516"),
+            "reason": "any-hi3516",
+        }],
+    )
+    assert match_xfail(impl, {"Model": "HI3516EV300_FOO"}) == "any-hi3516"
+    assert match_xfail(impl, {"Model": "Bullet42"}) is None
+
+
+def test_match_xfail_multiple_matchers_or():
+    from onvif_tt.registry import Implementation, match_xfail
+
+    impl = Implementation(
+        test_id="T", func=lambda: None,
+        xfail_on=[
+            {"Manufacturer": "H264", "reason": "Xiongmai"},
+            {"Manufacturer": "BuggyBrand", "reason": "Other vendor"},
+        ],
+    )
+    assert match_xfail(impl, {"Manufacturer": "H264"}) == "Xiongmai"
+    assert match_xfail(impl, {"Manufacturer": "BuggyBrand"}) == "Other vendor"
+    assert match_xfail(impl, {"Manufacturer": "Axis"}) is None

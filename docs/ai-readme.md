@@ -73,6 +73,50 @@ implementation is registered:
 }
 ```
 
+## Expected-failures (device-fingerprint xfail)
+
+Some ONVIF devices have well-documented spec violations. Tests that
+match a known-buggy device fingerprint are marked **xfailed** rather
+than failing the run, so CI stays green while the real signal — "did
+the bug get fixed?" — is preserved.
+
+In `cases/*.py`, an implementation declares the fingerprint inline::
+
+```python
+@register("DEVICE-1-1-9", profiles={"S", "T"}, mandatory=True,
+          requires_services={"devicemgmt"},
+          xfail_on=[{
+              "Manufacturer": "H264",
+              "reason": "Xiongmai stock closes the TCP connection instead "
+                        "of returning a SOAP 1.2 Fault.",
+          }])
+def test_soap_fault_on_invalid_capability(dut, spec): ...
+```
+
+Matcher semantics:
+
+* Each entry is a dict; **all** non-`reason` keys must match the
+  `GetDeviceInformation` field values on the DUT (Manufacturer, Model,
+  FirmwareVersion, SerialNumber, HardwareId).
+* Values can be literal strings (case-sensitive equality) or callables
+  (`lambda v: v.startswith("HI3516")`).
+* Multiple matchers OR together — any one matching is enough.
+
+In `results.json`, an xfailed result looks like::
+
+```json
+{
+  "id": "DEVICE-1-1-9",
+  "status": "xfailed",
+  "xfail_reason": "Xiongmai stock closes the TCP connection ...",
+  "longrepr": "Failed: expected a SOAP Fault, got ONVIFError: ..."
+}
+```
+
+If a test passes on a device where it was expected to fail, the status
+becomes `xpassed` and a Python warning is emitted — agents/CI should
+treat that as a positive signal ("the vendor fixed it!").
+
 ## Running tests: `onvif-tt run --json-report results.json`
 
 After a run, `results.json` has the shape:
@@ -81,11 +125,13 @@ After a run, `results.json` has the shape:
 {
   "target": "10.216.128.71:8899",
   "summary": {
-    "total": 5,
-    "passed": 4,
+    "total": 30,
+    "passed": 26,
     "failed": 0,
     "skipped": 1,
-    "error": 0
+    "error": 0,
+    "xfailed": 3,
+    "xpassed": 0
   },
   "results": [
     {
@@ -110,11 +156,11 @@ After a run, `results.json` has the shape:
 }
 ```
 
-`status` is one of `passed`, `failed`, `skipped`, `error`. On
-`failed`, the `longrepr` carries the pytest failure message and the
-last SOAP request/response are pinned to the result — enough context
-for an LLM to read the spec, read the SOAP envelope, and propose a
-device-side fix.
+`status` is one of `passed`, `failed`, `skipped`, `error`, `xfailed`,
+`xpassed`. On `failed` / `xfailed`, the `longrepr` carries the pytest
+failure message and the last SOAP request/response are pinned to the
+result — enough context for an LLM to read the spec, read the SOAP
+envelope, and propose a device-side fix.
 
 ## Typical agent loop
 

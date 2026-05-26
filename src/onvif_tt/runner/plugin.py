@@ -107,7 +107,7 @@ def pytest_runtest_makereport(item, call):
     outcome = yield
     rep = outcome.get_result()
     # Record once per item:
-    #  - 'call' phase outcome for tests that ran (pass/fail)
+    #  - 'call' phase outcome for tests that ran (pass/fail/xfail/xpass)
     #  - 'setup' phase outcome for tests that skipped or errored before call
     if rep.when == "call":
         pass  # always record
@@ -118,12 +118,25 @@ def pytest_runtest_makereport(item, call):
     tid = _id_for_item(item)
     if tid is None:
         return
+
+    # Distinguish xfail/xpass from plain skip/pass — pytest folds both
+    # into outcome="skipped"/"passed" with a wasxfail flag.
+    wasxfail = bool(getattr(rep, "wasxfail", False))
+    if wasxfail and rep.outcome == "skipped":
+        status = "xfailed"
+    elif wasxfail and rep.outcome == "passed":
+        status = "xpassed"
+    else:
+        status = rep.outcome
+
     rec: dict[str, Any] = {
         "id": tid,
-        "status": rep.outcome,
+        "status": status,
         "duration_s": rep.duration,
         "longrepr": str(rep.longrepr) if rep.longrepr else "",
     }
+    if wasxfail:
+        rec["xfail_reason"] = str(getattr(rep, "wasxfail", "")) or None
     impl = REGISTRY.get(tid)
     if impl:
         rec["profiles"] = sorted(impl.profiles)
@@ -141,7 +154,11 @@ def pytest_sessionfinish(session, exitstatus):  # noqa: D401
     path = session.config.getoption("--json-report")
     if not path:
         return
-    summary = {"total": 0, "passed": 0, "failed": 0, "skipped": 0, "error": 0}
+    summary = {
+        "total": 0, "passed": 0, "failed": 0,
+        "skipped": 0, "error": 0,
+        "xfailed": 0, "xpassed": 0,
+    }
     for r in _results:
         summary["total"] += 1
         summary[r["status"]] = summary.get(r["status"], 0) + 1

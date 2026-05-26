@@ -120,7 +120,17 @@ def test_pullpoint_pull_messages(dut: DUT, spec) -> None:
 
 
 @register("EVENT-3-1-36", profiles={"S", "T"}, mandatory=True,
-          requires_services={"devicemgmt", "events"})
+          requires_services={"devicemgmt", "events"},
+          xfail_on=[
+              {
+                  "Manufacturer": "H264",
+                  "reason": "Xiongmai stock firmware (Manufacturer=H264) "
+                            "silently keeps a PullPoint subscription "
+                            "active after Unsubscribe — PullMessages "
+                            "keeps returning responses where spec demands "
+                            "ResourceUnknownFault.",
+              },
+          ])
 def test_pullpoint_unsubscribe(dut: DUT, spec) -> None:
     """EVENT.html#tc.EVENT-3-1-36 — REALTIME PULLPOINT SUBSCRIPTION UNSUBSCRIBE.
 

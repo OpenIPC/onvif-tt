@@ -33,6 +33,15 @@ class Implementation:
     mandatory: bool = False
     requires_services: set[str] = field(default_factory=set)
     tags: set[str] = field(default_factory=set)
+    # Each entry is a matcher dict against ``GetDeviceInformation`` fields,
+    # plus a ``reason`` string. Example::
+    #
+    #     xfail_on=[{"Manufacturer": "H264", "reason": "Xiongmai stock ..."}]
+    #
+    # All matcher keys other than ``reason`` must equal the corresponding
+    # DUT field (case-sensitive); matchers can use callables for fuzzy
+    # comparison (``{"Model": lambda v: v.startswith("HI3516")}``).
+    xfail_on: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def qualname(self) -> str:
@@ -50,6 +59,7 @@ def register(
     mandatory: bool = False,
     requires_services: set[str] | None = None,
     tags: set[str] | None = None,
+    xfail_on: list[dict[str, Any]] | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator: register a callable as the implementation of ``test_id``.
 
@@ -57,6 +67,14 @@ def register(
     ``{"media", "media2"}``) the test depends on. The runner will skip
     tests whose required services aren't advertised by the DUT in
     ``GetServices``.
+
+    ``xfail_on`` is a list of device-fingerprint matchers. Each entry is
+    a dict where keys are :func:`onvif.devicemgmt.GetDeviceInformation`
+    field names (Manufacturer, Model, FirmwareVersion, SerialNumber,
+    HardwareId) and values are either literal strings (case-sensitive
+    equality) or callables (``value -> bool``). A special key ``reason``
+    carries the human-readable explanation. If any matcher matches the
+    DUT, the test is marked as expected-to-fail.
     """
 
     def deco(func: Callable[..., Any]) -> Callable[..., Any]:
@@ -73,10 +91,39 @@ def register(
             mandatory=mandatory,
             requires_services=set(requires_services or ()),
             tags=set(tags or ()),
+            xfail_on=list(xfail_on or ()),
         )
         return func
 
     return deco
+
+
+def match_xfail(impl: "Implementation", device_info: dict[str, Any]) -> str | None:
+    """Return the xfail reason if any matcher matches the DUT's device info.
+
+    A matcher matches when every non-``reason`` key/value pair satisfies::
+
+        - literal:  device_info[key] == matcher[key]
+        - callable: matcher[key](device_info[key]) is True
+        - missing:  False (a matcher field not present in device_info
+                    counts as no match)
+    """
+    for matcher in impl.xfail_on:
+        ok = True
+        for k, expected in matcher.items():
+            if k == "reason":
+                continue
+            actual = device_info.get(k)
+            if callable(expected):
+                if not expected(actual):
+                    ok = False
+                    break
+            elif actual != expected:
+                ok = False
+                break
+        if ok:
+            return matcher.get("reason", f"expected to fail on this DUT")
+    return None
 
 
 def discover() -> None:
