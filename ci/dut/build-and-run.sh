@@ -21,7 +21,8 @@ set -euo pipefail
 
 CI_DUT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK="${ONVIF_DUT_WORK:-/tmp/dut}"
-SRC="$WORK/onvif_simple_server"
+SRC="$WORK/src"   # clone target — NOT named onvif_simple_server because
+                  # the built binary has that name and we'd collide.
 REPO="${ONVIF_SRC_REPO:-https://github.com/roleoroleo/onvif_simple_server.git}"
 REF="${ONVIF_SRC_REF:-master}"
 
@@ -59,11 +60,11 @@ make -C "$SRC" HAVE_MBEDTLS=1 -j"$(nproc)" >/dev/null
 # 3. assemble the runtime dir under $WORK/www/onvif/
 # ---------------------------------------------------------------------------
 WWW="$WORK/www/onvif"
-mkdir -p "$WWW"
-cp "$SRC/onvif_simple_server" "$WORK/"
+mkdir -p "$WWW" "$WORK/bin"
+cp "$SRC/onvif_simple_server" "$WORK/bin/"
 for s in device_service events_service media_service media2_service \
          ptz_service deviceio_service imaging_service; do
-    ln -sfn "$WORK/onvif_simple_server" "$WWW/$s"
+    ln -sfn "$WORK/bin/onvif_simple_server" "$WWW/$s"
 done
 for d in device_service_files events_service_files generic_files \
          media_service_files media2_service_files ptz_service_files \
