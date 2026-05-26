@@ -35,6 +35,7 @@ dependencies = [
     "pytest>=8",
     "pytest-xdist>=3",
     "pydantic>=2",
+    "reportlab>=4",
 ]
 
 [project.urls]

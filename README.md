@@ -5,7 +5,7 @@
 [![ci](https://github.com/OpenIPC/onvif-tt/actions/workflows/ci.yml/badge.svg)](https://github.com/OpenIPC/onvif-tt/actions/workflows/ci.yml)
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![python](https://img.shields.io/badge/python-3.10%E2%80%933.13-blue)
-![tests](https://img.shields.io/badge/implementations-113-informational)
+![tests](https://img.shields.io/badge/implementations-138-informational)
 
 `onvif-tt` is a Linux-native, MIT-licensed alternative to the closed
 ONVIF Device Test Tool. It parses the public ONVIF Test Specification
@@ -226,6 +226,32 @@ emit stable schemas suitable for tool-use prompts. See
   document may copy, distribute, publish, or display this document so
   long as this copyright notice, license and disclaimer are retained
   with all copies of the document"). See `corpus/README.md`.
+
+## Refreshing the corpus to a newer ONVIF Test Specification
+
+Our committed corpus matches ONVIF Test Specification **v20.12** (Dec
+2020) — the v20.12 archive is what we extracted the HTML from.
+ONVIF publishes new test-spec revisions twice a year (June + Dec).
+Anything added since v20.12 (Profile M metadata, newer Analytics
+events, updated TLS posture, WebRTC streaming, etc.) is not in this
+catalog.
+
+To bring `corpus/html/` up to a newer revision:
+
+1. Obtain the newer ONVIF Device Test Tool installer archive (an
+   ONVIF-member colleague can hand it over — the DTT itself is
+   members-only, but the bundled Test Specification HTML is freely
+   redistributable under its own copyright).
+2. Inside the archive, the file `Docs/Specifications.exe` is a 7z
+   self-extractor. `7z x Specifications.exe` produces a
+   `Specifications/` directory of HTML files identical in shape to
+   the ones we ship.
+3. `cp Specifications/*.html corpus/html/` and run
+   `onvif-tt corpus refresh` to regenerate `corpus/parsed.json`.
+4. The deterministic-parse unit test will fail with a diff describing
+   the new tests — commit both the HTML and the regenerated JSON.
+
+No code changes should be needed; the parser is content-agnostic.
 
 ## Honesty notes about the published ONVIF test corpus
 

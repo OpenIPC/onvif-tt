@@ -280,7 +280,22 @@ def _build_parser() -> argparse.ArgumentParser:
     rp.add_argument("--corpus-dir")
     rp.set_defaults(func=_cmd_run)
 
+    repp = sub.add_parser(
+        "report",
+        help="render a results.json into a PDF Test Report",
+    )
+    repp.add_argument("results_json", help="results.json file from `onvif-tt run`")
+    repp.add_argument("output_pdf", help="output PDF path")
+    repp.set_defaults(func=_cmd_report)
+
     return p
+
+
+def _cmd_report(args) -> int:
+    from .runner.pdf_reporter import write_pdf
+    out = write_pdf(args.results_json, args.output_pdf)
+    print(f"wrote {out}")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
