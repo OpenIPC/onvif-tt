@@ -70,19 +70,36 @@ jobs:
 
       - name: Wait for the ONVIF SOAP endpoint
         run: |
+          set +e
+          OK=0
           for i in $(seq 1 20); do
-            if curl -fs --max-time 2 \
+            BODY=$(curl -sS --max-time 2 \
                 -X POST -H 'Content-Type: application/soap+xml' \
                 --data '<?xml version="1.0"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Body><GetSystemDateAndTime xmlns="http://www.onvif.org/ver10/device/wsdl"/></s:Body></s:Envelope>' \
-                http://127.0.0.1:8080/onvif/device_service >/dev/null; then
-              echo "DUT responding"; exit 0
+                http://127.0.0.1:8080/onvif/device_service 2>&1)
+            if echo "$BODY" | grep -q 'GetSystemDateAndTimeResponse'; then
+              echo "DUT responding"
+              OK=1
+              break
             fi
             sleep 1
           done
-          echo "DUT did not come up — recent logs:"
-          tail -50 /tmp/dut/wsd.log 2>/dev/null || true
-          tail -50 /tmp/dut/lighttpd.err 2>/dev/null || true
-          exit 1
+          if [ "$OK" = "0" ]; then
+            echo "=== DUT did not come up ==="
+            echo "=== curl last body ==="
+            echo "$BODY" | head -30
+            echo "=== /tmp/dut tree ==="
+            ls -la /tmp/dut /tmp/dut/bin /tmp/dut/www/onvif 2>/dev/null || true
+            echo "=== lighttpd.err ==="
+            tail -80 /tmp/dut/lighttpd.err 2>/dev/null || true
+            echo "=== wsd.log ==="
+            tail -80 /tmp/dut/wsd.log 2>/dev/null || true
+            echo "=== direct CGI invocation ==="
+            REQUEST_METHOD=POST SCRIPT_NAME=/onvif/device_service \
+              QUERY_STRING= CONTENT_LENGTH=0 \
+              /tmp/dut/bin/onvif_simple_server </dev/null 2>&1 | head -40 || true
+            exit 1
+          fi
 
       - name: Run onvif-tt against 127.0.0.1:8080
         run: |

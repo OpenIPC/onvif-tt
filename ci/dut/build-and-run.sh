@@ -88,20 +88,28 @@ server.document-root = "$WORK/www/"
 server.port          = 8080
 server.username      = "$(id -un)"
 server.groupname     = "$(id -gn)"
-server.errorlog      = "/tmp/dut/lighttpd.err"
-server.pid-file      = "/tmp/dut/lighttpd.pid"
+server.errorlog      = "$WORK/lighttpd.err"
+server.pid-file      = "$WORK/lighttpd.pid"
 
-server.modules = ( "mod_cgi" )
+server.modules = ( "mod_cgi", "mod_setenv" )
 
 # Any file whose name ends in '_service' is a CGI executable. Upstream
 # uses the same trick (`cgi.assign = ( "_service" => "" )`).
 cgi.assign = ( "_service" => "" )
 
-# Forward the OnvifSimpleServer config file path to the CGI binary.
+# Forward the OnvifSimpleServer config file path to the CGI binary
+# via env. onvif_simple_server checks for this env var when invoked
+# via CGI (no argv hand-off available).
 setenv.add-environment = (
     "ONVIF_SIMPLE_SERVER_CONF" => "$WORK/onvif.conf",
 )
 EOF
+
+# Also make the config reachable at the binary's compiled-in default
+# path (`/etc/onvif_simple_server.conf`), in case the env-var approach
+# isn't honoured by this build of onvif_simple_server. Idempotent.
+if [[ "$EUID" -eq 0 ]]; then SUDO=""; else SUDO="sudo"; fi
+$SUDO ln -sfn "$WORK/onvif.conf" /etc/onvif_simple_server.conf
 
 # ---------------------------------------------------------------------------
 # 5. start wsd_simple_server (WS-Discovery) + lighttpd (HTTP+CGI)
