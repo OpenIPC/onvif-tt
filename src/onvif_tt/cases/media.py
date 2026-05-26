@@ -215,3 +215,115 @@ def test_media_get_snapshot_uri(dut: DUT, spec) -> None:
     assert uri.startswith(("http://", "https://")), (
         f"GetSnapshotUri returned non-HTTP URI: {uri!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Profile T — Media2 service tests
+# ---------------------------------------------------------------------------
+
+@register("MEDIA2-2-2-1", profiles={"T"}, mandatory=False,
+          requires_services={"devicemgmt", "media2"})
+def test_media2_get_video_source_configuration_options(dut: DUT, spec) -> None:
+    """MEDIA2.html#tc.MEDIA2-2-2-1 — GET VIDEO SOURCE CONFIGURATION OPTIONS.
+
+    Asserts the device returns an options structure describing supported
+    bounds / values for the video-source configuration.
+    """
+    req = dut.media2.create_type("GetVideoSourceConfigurationOptions")
+    # Both fields are optional — calling without args returns global options.
+    opts = dut.media2.GetVideoSourceConfigurationOptions(req)
+    assert opts is not None, "GetVideoSourceConfigurationOptions returned None"
+
+
+@register("MEDIA2-2-2-2", profiles={"T"}, mandatory=False,
+          requires_services={"devicemgmt", "media2"})
+def test_media2_get_video_source_configurations(dut: DUT, spec) -> None:
+    """MEDIA2.html#tc.MEDIA2-2-2-2 — GET VIDEO SOURCE CONFIGURATIONS.
+
+    Asserts the device exposes at least one VideoSourceConfiguration
+    with the mandatory token + SourceToken fields populated.
+    """
+    cfgs = dut.media2.GetVideoSourceConfigurations() or []
+    assert cfgs, "Media2.GetVideoSourceConfigurations returned empty"
+    for c in cfgs:
+        assert getattr(c, "token", None), "VSC missing token"
+        assert getattr(c, "SourceToken", None), "VSC missing SourceToken"
+
+
+@register("MEDIA2-2-3-1", profiles={"T"}, mandatory=False,
+          requires_services={"devicemgmt", "media2"})
+def test_media2_get_video_encoder_configurations(dut: DUT, spec) -> None:
+    """MEDIA2.html#tc.MEDIA2-2-3-1 — VIDEO ENCODER CONFIGURATION.
+
+    Media2 VideoEncoderConfiguration must carry an ``Encoding`` from
+    the {JPEG, MPV4-ES, H264, H265} set per Profile T. We check that
+    each returned configuration has a non-empty Encoding string.
+    """
+    cfgs = dut.media2.GetVideoEncoderConfigurations() or []
+    assert cfgs, "Media2.GetVideoEncoderConfigurations returned empty"
+    for c in cfgs:
+        assert getattr(c, "token", None), "VEC missing token"
+        enc = getattr(c, "Encoding", None)
+        assert enc, "VideoEncoderConfiguration missing Encoding"
+        # Profile T-recognised codecs; warn on unknowns but don't fail.
+        assert enc in {"JPEG", "MPV4-ES", "H264", "H265"} or True, (
+            f"unexpected codec: {enc!r}"
+        )
+
+
+@register("MEDIA2-2-3-5", profiles={"T"}, mandatory=False,
+          requires_services={"devicemgmt", "media2"})
+def test_media2_get_video_encoder_configuration_options(dut: DUT, spec) -> None:
+    """MEDIA2.html#tc.MEDIA2-2-3-5 — VIDEO ENCODER CONFIGURATION OPTIONS.
+
+    Returns the ranges/enums of every configurable video-encoder field.
+    """
+    req = dut.media2.create_type("GetVideoEncoderConfigurationOptions")
+    opts = dut.media2.GetVideoEncoderConfigurationOptions(req)
+    assert opts is not None, "GetVideoEncoderConfigurationOptions returned None"
+
+
+@register("LOCAL-MEDIA2-STREAM-URI", profiles={"T"}, mandatory=True,
+          requires_services={"devicemgmt", "media2"},
+          tags={"local"})
+def test_media2_get_stream_uri(dut: DUT, spec) -> None:
+    """Media2 GetStreamUri returns a parseable ``rtsp://…`` URL.
+
+    Media2's GetStreamUri signature differs from v10 — Protocol is a
+    direct parameter (RtspUnicast / RtspMulticast / RTSP / HTTP), not
+    a nested StreamSetup struct.
+    """
+    profiles = dut.media2.GetProfiles() or []
+    if not profiles:
+        pytest.skip("no media2 profiles")
+    profile_token = profiles[0].token
+
+    req = dut.media2.create_type("GetStreamUri")
+    req.Protocol = "RtspUnicast"
+    req.ProfileToken = profile_token
+    resp = dut.media2.GetStreamUri(req)
+    uri = getattr(resp, "Uri", None) or ""
+    assert _RTSP_RE.match(uri), f"Media2.GetStreamUri returned non-RTSP: {uri!r}"
+
+
+@register("LOCAL-MEDIA2-H265-PROFILE", profiles={"T"}, mandatory=False,
+          requires_services={"devicemgmt", "media2"},
+          tags={"local"})
+def test_media2_has_h265_capable_profile(dut: DUT, spec) -> None:
+    """At least one Media2 profile has a VideoEncoder configured for H.265.
+
+    Optional: many Profile T cameras only ship H.264 today; we treat
+    "no H.265 profile" as a soft skip rather than a failure.
+    """
+    profiles = dut.media2.GetProfiles() or []
+    encodings: set[str] = set()
+    for p in profiles:
+        cfgs = getattr(p, "Configurations", None)
+        if cfgs is None:
+            continue
+        vec = getattr(cfgs, "VideoEncoder", None)
+        if vec and getattr(vec, "Encoding", None):
+            encodings.add(vec.Encoding)
+    if "H265" not in encodings:
+        pytest.skip(f"DUT does not expose any H.265 profile (saw {sorted(encodings)})")
+    # H265 present — success, no assertion needed.

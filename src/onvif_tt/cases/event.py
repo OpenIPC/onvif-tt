@@ -119,6 +119,76 @@ def test_pullpoint_pull_messages(dut: DUT, spec) -> None:
         # returns an empty NotificationMessage list with a valid timestamp.
 
 
+# ---------------------------------------------------------------------------
+# Basic Notification (NotificationProducer)
+#
+# The Subscribe operation needs a ConsumerReference — the URL the device
+# would POST Notify messages to. We don't run an HTTP receiver; the
+# tests only exercise the Subscribe / Renew / Unsubscribe lifecycle so a
+# throwaway URL is fine.
+# ---------------------------------------------------------------------------
+
+@register("EVENT-2-1-9", profiles={"S", "T"}, mandatory=False,
+          requires_services={"devicemgmt", "events"})
+def test_basic_subscribe(dut: DUT, spec) -> None:
+    """EVENT.html#tc.EVENT-2-1-9 — BASIC NOTIFICATION SUBSCRIBE.
+
+    The device responds with a SubscribeResponse carrying a valid
+    SubscriptionReference and TerminationTime > CurrentTime.
+    """
+    with dut.create_notify_subscription(initial_termination="PT15S") as sub:
+        assert sub.subscription_url.startswith(("http://", "https://")), (
+            f"subscription URL not a URI: {sub.subscription_url!r}"
+        )
+        assert sub.termination_time > sub.current_time, (
+            f"Subscribe: TerminationTime {sub.termination_time} <= "
+            f"CurrentTime {sub.current_time}"
+        )
+
+
+@register("EVENT-2-1-12", profiles={"S", "T"}, mandatory=False,
+          requires_services={"devicemgmt", "events"})
+def test_basic_renew(dut: DUT, spec) -> None:
+    """EVENT.html#tc.EVENT-2-1-12 — BASIC NOTIFICATION RENEW.
+
+    Renew extends the termination strictly later than the original.
+    """
+    with dut.create_notify_subscription(initial_termination="PT15S") as sub:
+        original_term = sub.termination_time
+        resp = sub.renew("PT60S")
+        new_term = resp.TerminationTime
+        new_now = resp.CurrentTime
+        assert new_term > new_now, (
+            f"Renew: TerminationTime {new_term} <= CurrentTime {new_now}"
+        )
+        assert new_term > original_term, (
+            f"Renew did not extend termination: {original_term} → {new_term}"
+        )
+
+
+@register("EVENT-2-1-28", profiles={"S", "T"}, mandatory=True,
+          requires_services={"devicemgmt", "events"},
+          xfail_on=[
+              {
+                  "Manufacturer": "H264",
+                  "reason": "Xiongmai stock firmware (Manufacturer=H264) "
+                            "is expected to silently keep the subscription "
+                            "alive after Unsubscribe (same pattern as "
+                            "EVENT-3-1-36 for PullPoint).",
+              },
+          ])
+def test_basic_unsubscribe(dut: DUT, spec) -> None:
+    """EVENT.html#tc.EVENT-2-1-28 — BASIC NOTIFICATION UNSUBSCRIBE.
+
+    Explicit Unsubscribe succeeds; a follow-up Renew on the destroyed
+    subscription must fault.
+    """
+    sub = dut.create_notify_subscription(initial_termination="PT30S")
+    sub.unsubscribe()
+    with pytest.raises(Exception):  # ResourceUnknownFault or similar
+        sub.renew("PT60S")
+
+
 @register("EVENT-3-1-36", profiles={"S", "T"}, mandatory=True,
           requires_services={"devicemgmt", "events"},
           xfail_on=[

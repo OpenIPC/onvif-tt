@@ -165,6 +165,70 @@ class PullPointHandle:
         self.unsubscribe()
 
 
+class NotifyHandle:
+    """Wraps a basic-notification Subscribe response.
+
+    Unlike :class:`PullPointHandle` this doesn't expose Pull/Sync — those
+    aren't part of the Notification Producer pattern. It only owns the
+    SubscriptionManager binding (Renew, Unsubscribe).
+
+    Use a throwaway ``ConsumerReference`` URL when calling
+    :meth:`DUT.create_notify_subscription` — for round-trip tests we
+    don't actually receive the Notify messages, only assert the
+    Subscribe/Unsubscribe lifecycle.
+    """
+
+    _EVENT_NS = "{http://www.onvif.org/ver10/events/wsdl}"
+
+    def __init__(self, dut: "DUT", subscribe_resp: Any) -> None:
+        from onvif import ONVIFService
+
+        self._dut = dut
+        self.subscription_url = subscribe_resp.SubscriptionReference.Address._value_1
+        self.current_time = subscribe_resp.CurrentTime
+        self.termination_time = subscribe_resp.TerminationTime
+        self._alive = True
+
+        cam = dut._camera
+        _xaddr, wsdl_file, _binding = cam.get_definition("events")
+        self._mgr = ONVIFService(
+            xaddr=self.subscription_url,
+            user=cam.user, passwd=cam.passwd, url=wsdl_file,
+            encrypt=cam.encrypt, daemon=cam.daemon, no_cache=cam.no_cache,
+            dt_diff=cam.dt_diff, transport=cam.transport,
+            portType="SubscriptionManager",
+            binding_name=f"{self._EVENT_NS}SubscriptionManagerBinding",
+        )
+        try:
+            self._mgr.zeep_client.plugins.append(dut._trace)
+        except AttributeError:
+            pass
+        dut.session.subscriptions.append(self)
+
+    def renew(self, termination_time: str = "PT60S") -> Any:
+        return self._mgr.Renew({"TerminationTime": termination_time})
+
+    def unsubscribe(self) -> Any | None:
+        if not self._alive:
+            return None
+        try:
+            return self._mgr.Unsubscribe()
+        except Exception:
+            return None
+        finally:
+            self._alive = False
+            try:
+                self._dut.session.subscriptions.remove(self)
+            except ValueError:
+                pass
+
+    def __enter__(self) -> "NotifyHandle":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.unsubscribe()
+
+
 class DUT:
     """A lazy-loaded ONVIF device handle."""
 
@@ -237,6 +301,40 @@ class DUT:
             {"InitialTerminationTime": initial_termination}
         )
         return PullPointHandle(self, resp)
+
+    def create_notify_subscription(
+        self,
+        consumer_reference: str = "http://127.0.0.1:1/onvif-tt-throwaway-consumer",
+        initial_termination: str = "PT30S",
+    ) -> "NotifyHandle":
+        """Basic-notification Subscribe with a throwaway ConsumerReference.
+
+        We never set up an actual notification receiver; the test exercises
+        only the Subscribe/Renew/Unsubscribe lifecycle. Any Notify the
+        device tries to push to the consumer URL will fail at the device
+        with no impact on our side.
+        """
+        from onvif import ONVIFService
+
+        cam = self._camera
+        _xaddr, wsdl_file, _binding = cam.get_definition("events")
+        np = ONVIFService(
+            xaddr=self.session.services.get("events") or _xaddr,
+            user=cam.user, passwd=cam.passwd, url=wsdl_file,
+            encrypt=cam.encrypt, daemon=cam.daemon, no_cache=cam.no_cache,
+            dt_diff=cam.dt_diff, transport=cam.transport,
+            portType="NotificationProducer",
+            binding_name="{http://www.onvif.org/ver10/events/wsdl}NotificationProducerBinding",
+        )
+        try:
+            np.zeep_client.plugins.append(self._trace)
+        except AttributeError:
+            pass
+        resp = np.Subscribe({
+            "ConsumerReference": {"Address": {"_value_1": consumer_reference}},
+            "InitialTerminationTime": initial_termination,
+        })
+        return NotifyHandle(self, resp)
 
     def teardown_subscriptions(self) -> None:
         """Unsubscribe everything still on session.subscriptions.

@@ -2,20 +2,27 @@
 
 > Open-source, headless, **CI- and AI-friendly** ONVIF conformance test tool.
 
+![ci](https://img.shields.io/badge/ci-github_actions-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![tests](https://img.shields.io/badge/implementations-43-informational)
+
 `onvif-tt` is a Linux-native, MIT-licensed alternative to the closed
 ONVIF Device Test Tool. It parses the public ONVIF Test Specification
 HTML corpus into a machine-readable catalog and executes registered
 test implementations against a Device Under Test, emitting both
 **JUnit XML** (CI) and **structured JSON** (LLM agents).
 
-This is **0.1.0 / alpha**. MVP slice today:
+This is **0.1.0 / alpha**. Today:
 
 * 22 ONVIF test specification files → **1,121 test cases** parsed and
   cached as JSON.
-* 5 test implementations against the Device service + Media2 (Profile S
-  mandatory subset).
+* **43 test implementations** across Device, Media v10, Media2, Events
+  (PullPoint + Basic Notification), PTZ, Imaging.
 * CLI: `list`, `show`, `corpus refresh|stats`, `run`.
 * `run` outputs JUnit XML + JSON + plain pytest stdout.
+* Device-fingerprint xfail surfaces known-buggy firmware without
+  alarming CI; `xpassed` warning signals when a vendor fixes it.
+* `.github/workflows/ci.yml` runs parser/registry tests + catalog
+  sanity on every push (no DUT needed). An optional integration job
+  exercises onvif-tt against a Happytime virtual ONVIF device.
 
 ## Why this exists
 

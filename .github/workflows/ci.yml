@@ -1,0 +1,120 @@
+name: ci
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: parser + registry unit tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install package + deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Run unit tests
+        run: pytest tests/ -v
+
+      - name: Catalog sanity
+        run: |
+          onvif-tt corpus stats
+          # Catalog must have well over 1000 entries.
+          [ "$(onvif-tt list --format json --compact | python -c 'import json,sys; print(len(json.load(sys.stdin)))')" -gt 1000 ]
+
+      - name: Implemented-vs-corpus check
+        run: |
+          # Every registered ID (except LOCAL-*) must exist in the catalog.
+          onvif-tt list --implemented --format json | python -c '
+          import json, sys
+          for r in json.load(sys.stdin):
+              if r["id"].startswith("LOCAL-"):
+                  continue
+              if not r.get("title"):
+                  raise SystemExit(f"registered ID {r[\"id\"]!r} has no corpus title")
+          '
+
+  happytime-integration:
+    name: end-to-end against virtual ONVIF device
+    runs-on: ubuntu-latest
+    # Optional job — skipped in the default CI flow because we don't bundle
+    # Happytime here. Enable by setting the HAPPYTIME_URL repo secret to a
+    # location that hosts the Linux x64 tarball (the published download
+    # link works from CI runners too).
+    if: vars.HAPPYTIME_URL != ''
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install package
+        run: pip install -e .
+
+      - name: Fetch & launch Happytime Multi ONVIF Server
+        run: |
+          mkdir -p $HOME/happytime
+          curl -fsSL "${{ vars.HAPPYTIME_URL }}" \
+            -o $HOME/happytime/multi.tar.gz
+          tar -xzf $HOME/happytime/multi.tar.gz -C $HOME/happytime
+          cd $HOME/happytime/happytime-multi-onvif-server
+          LD_LIBRARY_PATH=$LD_LIBRARY_PATH:. nohup ./multionvifserver \
+            >$HOME/happytime/server.log 2>&1 &
+          echo "HAPPYTIME_PID=$!" >> $GITHUB_ENV
+          # Wait for the SOAP endpoint to come up.
+          for i in 1 2 3 4 5; do
+            if curl -fs --max-time 2 \
+                -X POST -H 'Content-Type: application/soap+xml' \
+                --data '<?xml version="1.0"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Body><GetSystemDateAndTime xmlns="http://www.onvif.org/ver10/device/wsdl"/></s:Body></s:Envelope>' \
+                http://127.0.0.1:10000/onvif/device_service >/dev/null; then
+              echo "Happytime is up"; exit 0
+            fi
+            sleep 2
+          done
+          echo "Happytime did not come up — log:"; cat $HOME/happytime/server.log
+          exit 1
+
+      - name: Run onvif-tt against localhost:10000
+        run: |
+          onvif-tt run \
+            --target 127.0.0.1:10000 \
+            --user admin --password admin \
+            --junit-xml junit.xml \
+            --json-report results.json
+          # Drop a summary into the run log.
+          python -c 'import json; d=json.load(open("results.json")); print("SUMMARY:", d["summary"])'
+
+      - name: Upload artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: onvif-tt-results
+          path: |
+            junit.xml
+            results.json
+
+      - name: Tear down Happytime
+        if: always()
+        run: |
+          if [ -n "$HAPPYTIME_PID" ]; then kill "$HAPPYTIME_PID" || true; fi
