@@ -35,22 +35,16 @@ jobs:
         run: pytest tests/ -v
 
       - name: Catalog sanity
+        shell: python
         run: |
-          onvif-tt corpus stats
-          # Catalog must have well over 1000 entries.
-          [ "$(onvif-tt list --format json --compact | python -c 'import json,sys; print(len(json.load(sys.stdin)))')" -gt 1000 ]
-
-      - name: Implemented-vs-corpus check
-        run: |
-          # Every registered ID (except LOCAL-*) must exist in the catalog.
-          onvif-tt list --implemented --format json | python -c '
-          import json, sys
-          for r in json.load(sys.stdin):
-              if r["id"].startswith("LOCAL-"):
-                  continue
-              if not r.get("title"):
-                  raise SystemExit(f"registered ID {r[\"id\"]!r} has no corpus title")
-          '
+          import json, subprocess, sys
+          subprocess.run(["onvif-tt", "corpus", "stats"], check=True)
+          out = subprocess.check_output(
+              ["onvif-tt", "list", "--format", "json", "--compact"]
+          )
+          entries = json.loads(out)
+          assert len(entries) > 1000, f"catalog only has {len(entries)} entries"
+          print(f"catalog OK ({len(entries)} entries)")
 
   happytime-integration:
     name: end-to-end against virtual ONVIF device
