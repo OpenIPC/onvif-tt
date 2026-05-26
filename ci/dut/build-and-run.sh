@@ -31,7 +31,7 @@ step()  { printf '\033[36m[dut]\033[0m %s\n' "$*"; }
 # 1. apt deps (idempotent — skip if installed)
 # ---------------------------------------------------------------------------
 need_apt=()
-for pkg in libmbedtls-dev zlib1g-dev lighttpd; do
+for pkg in libmbedtls-dev libjson-c-dev zlib1g-dev lighttpd; do
     if ! dpkg -s "$pkg" >/dev/null 2>&1; then
         need_apt+=("$pkg")
     fi
