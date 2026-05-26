@@ -111,6 +111,13 @@ EOF
 if [[ "$EUID" -eq 0 ]]; then SUDO=""; else SUDO="sudo"; fi
 $SUDO ln -sfn "$WORK/onvif.conf" /etc/onvif_simple_server.conf
 
+# onvif_simple_server and friends log to hard-coded paths under /var/log
+# that the unprivileged user can't create. Pre-create them and chown.
+for f in onvif_simple_server.log onvif_notify_server.log wsd_simple_server.log; do
+    $SUDO touch "/var/log/$f"
+    $SUDO chown "$(id -u):$(id -g)" "/var/log/$f"
+done
+
 # ---------------------------------------------------------------------------
 # 5. start wsd_simple_server (WS-Discovery) + lighttpd (HTTP+CGI)
 # ---------------------------------------------------------------------------
