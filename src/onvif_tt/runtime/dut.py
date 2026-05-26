@@ -54,6 +54,11 @@ class DUTSession:
 
     Empty by default; the feature-discovery module fills ``services`` from
     ``GetServices`` once and the runner reuses it across tests.
+
+    ``subscriptions`` is the list of live PullPointHandle objects opened
+    during this session — fixture teardown walks it and unsubscribes
+    anything still alive, so a test crash never leaves dangling
+    subscriptions on the device.
     """
 
     services: dict[str, str] = field(default_factory=dict)  # name → xaddr
@@ -61,6 +66,102 @@ class DUTSession:
     soap_traces: collections.deque[tuple[str, str]] = field(
         default_factory=lambda: collections.deque(maxlen=64)
     )
+    subscriptions: list[Any] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# PullPoint subscription handle
+# ---------------------------------------------------------------------------
+
+class PullPointHandle:
+    """Wraps a CreatePullPointSubscription response with the two ONVIF
+    bindings rooted at the subscription URL: PullPointSubscription
+    (for ``PullMessages`` / ``SetSynchronizationPoint``) and
+    SubscriptionManager (for ``Renew`` / ``Unsubscribe``).
+
+    Usage::
+
+        with dut.create_pullpoint(initial_termination="PT60S") as pp:
+            resp = pp.pull_messages(timeout="PT3S", limit=5)
+            pp.set_synchronization_point()
+            # auto-unsubscribe on __exit__
+
+    The handle registers itself on ``dut.session.subscriptions`` so a
+    session-scope teardown can clean up after a crashing test.
+    """
+
+    _EVENT_NS = "{http://www.onvif.org/ver10/events/wsdl}"
+
+    def __init__(self, dut: "DUT", create_resp: Any) -> None:
+        from onvif import ONVIFService  # python-onvif-zeep
+
+        self._dut = dut
+        self.subscription_url = create_resp.SubscriptionReference.Address._value_1
+        self.current_time = create_resp.CurrentTime
+        self.termination_time = create_resp.TerminationTime
+        self._alive = True
+
+        cam = dut._camera
+        _xaddr, wsdl_file, _binding = cam.get_definition("events")
+        common = dict(
+            user=cam.user, passwd=cam.passwd, url=wsdl_file,
+            encrypt=cam.encrypt, daemon=cam.daemon, no_cache=cam.no_cache,
+            dt_diff=cam.dt_diff, transport=cam.transport,
+        )
+        # Two bindings, same subscription URL.
+        self._pull = ONVIFService(
+            xaddr=self.subscription_url,
+            **common,
+            portType="PullPointSubscription",
+            binding_name=f"{self._EVENT_NS}PullPointSubscriptionBinding",
+        )
+        self._mgr = ONVIFService(
+            xaddr=self.subscription_url,
+            **common,
+            portType="SubscriptionManager",
+            binding_name=f"{self._EVENT_NS}SubscriptionManagerBinding",
+        )
+        # Attach SOAP trace plugin to both.
+        for svc in (self._pull, self._mgr):
+            try:
+                svc.zeep_client.plugins.append(dut._trace)
+            except AttributeError:
+                pass
+
+        dut.session.subscriptions.append(self)
+
+    # ------------------------------------------------------------------ ops
+
+    def pull_messages(self, timeout: str = "PT3S", limit: int = 5) -> Any:
+        return self._pull.PullMessages({"Timeout": timeout, "MessageLimit": limit})
+
+    def set_synchronization_point(self) -> Any:
+        return self._pull.SetSynchronizationPoint()
+
+    def renew(self, termination_time: str = "PT60S") -> Any:
+        return self._mgr.Renew({"TerminationTime": termination_time})
+
+    def unsubscribe(self) -> Any | None:
+        if not self._alive:
+            return None
+        try:
+            return self._mgr.Unsubscribe()
+        except Exception:  # device gone, expired, etc.
+            return None
+        finally:
+            self._alive = False
+            try:
+                self._dut.session.subscriptions.remove(self)
+            except ValueError:
+                pass
+
+    # ------------------------------------------------------------------ ctx
+
+    def __enter__(self) -> "PullPointHandle":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.unsubscribe()
 
 
 class DUT:
@@ -120,3 +221,27 @@ class DUT:
             if direction == "response":
                 return envelope
         return None
+
+    # ------------------------------------------------------------------
+
+    def create_pullpoint(self, initial_termination: str = "PT60S") -> PullPointHandle:
+        """Call CreatePullPointSubscription and wrap the result.
+
+        The returned handle is a context manager that auto-unsubscribes
+        on ``__exit__``. It's also registered on
+        ``self.session.subscriptions`` so the session-scope fixture
+        teardown can clean up after a crashing test.
+        """
+        resp = self.events.CreatePullPointSubscription(
+            {"InitialTerminationTime": initial_termination}
+        )
+        return PullPointHandle(self, resp)
+
+    def teardown_subscriptions(self) -> None:
+        """Unsubscribe everything still on session.subscriptions.
+
+        Called once at end of pytest session — protects against test
+        crashes that bypassed ``with`` blocks.
+        """
+        for handle in list(self.session.subscriptions):
+            handle.unsubscribe()

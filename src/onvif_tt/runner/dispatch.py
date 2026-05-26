@@ -47,9 +47,14 @@ def dut(request):
         password=request.config.getoption("--password") or "",
     )
     try:
-        return DUT(cfg)
+        d = DUT(cfg)
     except Exception as exc:  # connection refused, WSDL fetch failure, ...
         pytest.skip(f"cannot construct DUT for {target}: {exc}")
+        return  # unreachable but appeases type checkers
+    yield d
+    # Belt-and-braces: any subscription a crashing test left behind gets
+    # unsubscribed here so we don't pile up state on the device.
+    d.teardown_subscriptions()
 
 
 @pytest.fixture(scope="session")
