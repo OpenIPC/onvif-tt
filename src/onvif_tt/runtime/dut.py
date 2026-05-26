@@ -35,6 +35,11 @@ _SERVICE_FACTORIES: dict[str, str] = {
     "search": "create_search_service",
     "replay": "create_replay_service",
     "deviceio": "create_deviceio_service",
+    # Profile A (Access Control) + Profile D (Door Control). python-onvif-zeep
+    # ships these WSDLs but doesn't expose a dedicated factory helper, so we
+    # go through the generic ``create_onvif_service(name)`` path.
+    "accesscontrol": "__create_onvif_service:accesscontrol",
+    "doorcontrol":   "__create_onvif_service:doorcontrol",
 }
 
 
@@ -259,8 +264,14 @@ class DUT:
         if name in _SERVICE_FACTORIES:
             svc = self._services.get(name)
             if svc is None:
-                factory = getattr(self._camera, _SERVICE_FACTORIES[name])
-                svc = factory()
+                spec = _SERVICE_FACTORIES[name]
+                if spec.startswith("__create_onvif_service:"):
+                    # Generic path for services without a dedicated factory.
+                    wsdl_name = spec.split(":", 1)[1]
+                    svc = self._camera.create_onvif_service(wsdl_name)
+                else:
+                    factory = getattr(self._camera, spec)
+                    svc = factory()
                 # Inject our trace plugin into the underlying zeep client.
                 try:
                     svc.zeep_client.plugins.append(self._trace)

@@ -27,6 +27,8 @@ _NS_TO_SHORT = {
     "http://www.onvif.org/ver10/search/wsdl": "search",
     "http://www.onvif.org/ver10/replay/wsdl": "replay",
     "http://www.onvif.org/ver10/deviceIO/wsdl": "deviceio",
+    "http://www.onvif.org/ver10/accesscontrol/wsdl": "accesscontrol",
+    "http://www.onvif.org/ver10/doorcontrol/wsdl": "doorcontrol",
 }
 
 

@@ -5,7 +5,7 @@
 [![ci](https://github.com/OpenIPC/onvif-tt/actions/workflows/ci.yml/badge.svg)](https://github.com/OpenIPC/onvif-tt/actions/workflows/ci.yml)
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![python](https://img.shields.io/badge/python-3.10%E2%80%933.13-blue)
-![tests](https://img.shields.io/badge/implementations-84-informational)
+![tests](https://img.shields.io/badge/implementations-113-informational)
 
 `onvif-tt` is a Linux-native, MIT-licensed alternative to the closed
 ONVIF Device Test Tool. It parses the public ONVIF Test Specification
@@ -40,6 +40,13 @@ ONVIF-compliant device.
   * **Profile G** — Recording control + capabilities, Recording Search
     (`FindRecordings`, `GetRecordingSummary`, `EndSearch`-fault),
     Replay (`GetReplayUri`)
+  * **Profile A** — Access Control: service capabilities, GetServices
+    consistency, AccessPointInfo / AreaInfo getters + invalid-token
+    faults
+  * **Profile D** — Door Control: capabilities, GetDoorState /
+    GetDoorInfo / GetDoorInfoList, eight door-actuation operations
+    with invalid-token Fault verification + six "command-not-supported"
+    paths (success OR ActionNotSupported Fault both conformant)
 * Read-only by default. Tests that actuate hardware (motors, recording,
   factory reset) opt in via `--allow-writes`.
 * Device-fingerprint **`xfail_on`** surfaces known-buggy firmware
