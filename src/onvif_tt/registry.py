@@ -37,6 +37,12 @@ class Implementation:
     # configuration change, reboot, factory reset, …). Runner skips it
     # unless the operator passes ``--allow-writes`` on the run command.
     requires_writes: bool = False
+    # If True, this test reboots / factory-resets the DUT and waits for
+    # recovery — i.e. takes the device offline for 30–120 seconds and
+    # disrupts every other ONVIF client on the LAN. Gated behind a
+    # *separate* ``--allow-reboot`` flag so a casual --allow-writes user
+    # doesn't get an unexpected outage.
+    requires_reboot: bool = False
     # Each entry is a matcher dict against ``GetDeviceInformation`` fields,
     # plus a ``reason`` string. Example::
     #
@@ -65,6 +71,7 @@ def register(
     tags: set[str] | None = None,
     xfail_on: list[dict[str, Any]] | None = None,
     requires_writes: bool = False,
+    requires_reboot: bool = False,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator: register a callable as the implementation of ``test_id``.
 
@@ -98,6 +105,7 @@ def register(
             tags=set(tags or ()),
             xfail_on=list(xfail_on or ()),
             requires_writes=requires_writes,
+            requires_reboot=requires_reboot,
         )
         return func
 

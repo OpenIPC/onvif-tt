@@ -5,7 +5,7 @@
 [![ci](https://github.com/OpenIPC/onvif-tt/actions/workflows/ci.yml/badge.svg)](https://github.com/OpenIPC/onvif-tt/actions/workflows/ci.yml)
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![python](https://img.shields.io/badge/python-3.10%E2%80%933.13-blue)
-![tests](https://img.shields.io/badge/implementations-138-informational)
+![tests](https://img.shields.io/badge/implementations-140-informational)
 
 `onvif-tt` is a Linux-native, MIT-licensed alternative to the closed
 ONVIF Device Test Tool. It parses the public ONVIF Test Specification

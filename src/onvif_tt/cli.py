@@ -220,6 +220,12 @@ def _cmd_run(args, unknown_args) -> int:
         pytest_args.append("--mandatory-only")
     if args.allow_writes:
         pytest_args.append("--allow-writes")
+    if args.allow_reboot:
+        pytest_args.append("--allow-reboot")
+        # --allow-reboot implies --allow-writes (reboot tests are a
+        # superset of write tests).
+        if "--allow-writes" not in pytest_args:
+            pytest_args.append("--allow-writes")
     if args.junit_xml:
         pytest_args.append(f"--junit-xml={args.junit_xml}")
     if args.json_report:
@@ -275,6 +281,10 @@ def _build_parser() -> argparse.ArgumentParser:
     rp.add_argument("--allow-writes", action="store_true",
                     help="enable tests that mutate DUT state (motors, "
                          "config, reboot, factory reset)")
+    rp.add_argument("--allow-reboot", action="store_true",
+                    help="enable tests that REBOOT the DUT and wait for "
+                         "recovery (separate gate beyond --allow-writes; "
+                         "each test takes ~60-120 s)")
     rp.add_argument("--junit-xml")
     rp.add_argument("--json-report")
     rp.add_argument("--corpus-dir")

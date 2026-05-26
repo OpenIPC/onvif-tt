@@ -103,6 +103,11 @@ def test_onvif_case(test_id, dut, _services, _device_info, spec, request):
         pytest.skip(
             "test mutates DUT state — pass --allow-writes to enable"
         )
+    if impl.requires_reboot and not request.config.getoption("--allow-reboot"):
+        pytest.skip(
+            "test reboots the DUT (30–120 s outage) — pass --allow-reboot "
+            "to enable"
+        )
 
     # Device-fingerprint-aware xfail. If a known-bad matcher hits this
     # DUT we wrap the test body in a try/except so:

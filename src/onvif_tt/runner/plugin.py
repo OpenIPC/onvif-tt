@@ -46,6 +46,13 @@ def pytest_addoption(parser):  # noqa: D401
              "reset). Off by default — tests flagged requires_writes "
              "skip unless this flag is given.",
     )
+    group.addoption(
+        "--allow-reboot", action="store_true",
+        help="Opt in to tests that REBOOT the DUT and wait for recovery. "
+             "Implies --allow-writes. Skipped by default — these tests "
+             "take ~60–120 s each and disrupt every other ONVIF client "
+             "on the LAN. Explicit flag required to avoid accidents.",
+    )
     group.addoption("--json-report", default="", help="Path to JSON result file.")
     group.addoption(
         "--corpus-dir",
