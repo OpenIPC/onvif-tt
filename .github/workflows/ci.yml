@@ -46,14 +46,13 @@ jobs:
           assert len(entries) > 1000, f"catalog only has {len(entries)} entries"
           print(f"catalog OK ({len(entries)} entries)")
 
-  happytime-integration:
-    name: end-to-end against virtual ONVIF device
+  integration:
+    name: end-to-end against onvif_simple_server
     runs-on: ubuntu-latest
-    # Optional job — skipped in the default CI flow because we don't bundle
-    # Happytime here. Enable by setting the HAPPYTIME_URL repo secret to a
-    # location that hosts the Linux x64 tarball (the published download
-    # link works from CI runners too).
-    if: vars.HAPPYTIME_URL != ''
+    # Builds the upstream roleoroleo/onvif_simple_server (GPLv3) — the
+    # same ONVIF stack OpenIPC firmware ships — and runs onvif-tt
+    # against it. No external mirrors; everything is fetched from
+    # GitHub (the upstream source) and Ubuntu's package archive.
     steps:
       - uses: actions/checkout@v4
 
@@ -63,52 +62,58 @@ jobs:
           python-version: '3.12'
           cache: pip
 
-      - name: Install package
+      - name: Install onvif-tt
         run: pip install -e .
 
-      - name: Fetch & launch Happytime Multi ONVIF Server
+      - name: Build & launch onvif_simple_server DUT
+        run: ci/dut/build-and-run.sh
+
+      - name: Wait for the ONVIF SOAP endpoint
         run: |
-          mkdir -p $HOME/happytime
-          curl -fsSL "${{ vars.HAPPYTIME_URL }}" \
-            -o $HOME/happytime/multi.tar.gz
-          tar -xzf $HOME/happytime/multi.tar.gz -C $HOME/happytime
-          cd $HOME/happytime/happytime-multi-onvif-server
-          LD_LIBRARY_PATH=$LD_LIBRARY_PATH:. nohup ./multionvifserver \
-            >$HOME/happytime/server.log 2>&1 &
-          echo "HAPPYTIME_PID=$!" >> $GITHUB_ENV
-          # Wait for the SOAP endpoint to come up.
-          for i in 1 2 3 4 5; do
+          for i in $(seq 1 20); do
             if curl -fs --max-time 2 \
                 -X POST -H 'Content-Type: application/soap+xml' \
                 --data '<?xml version="1.0"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Body><GetSystemDateAndTime xmlns="http://www.onvif.org/ver10/device/wsdl"/></s:Body></s:Envelope>' \
-                http://127.0.0.1:10000/onvif/device_service >/dev/null; then
-              echo "Happytime is up"; exit 0
+                http://127.0.0.1:8080/onvif/device_service >/dev/null; then
+              echo "DUT responding"; exit 0
             fi
-            sleep 2
+            sleep 1
           done
-          echo "Happytime did not come up — log:"; cat $HOME/happytime/server.log
+          echo "DUT did not come up — recent logs:"
+          tail -50 /tmp/dut/wsd.log 2>/dev/null || true
+          tail -50 /tmp/dut/lighttpd.err 2>/dev/null || true
           exit 1
 
-      - name: Run onvif-tt against localhost:10000
+      - name: Run onvif-tt against 127.0.0.1:8080
         run: |
+          # Narrow allowlist to start: only the core read-only tests we
+          # expect to pass against onvif_simple_server. Streaming /
+          # ffprobe / write-actuating tests are excluded by leaving
+          # their globs off. Expand as we tighten the DUT config.
           onvif-tt run \
-            --target 127.0.0.1:10000 \
+            --target 127.0.0.1:8080 \
             --user admin --password admin \
+            --id-glob 'DEVICE-1-1-2'  \
+            --id-glob 'DEVICE-1-1-13' \
+            --id-glob 'DEVICE-3-1-9'  \
+            --id-glob 'EVENT-1-1-2'   \
             --junit-xml junit.xml \
             --json-report results.json
-          # Drop a summary into the run log.
           python -c 'import json; d=json.load(open("results.json")); print("SUMMARY:", d["summary"])'
 
       - name: Upload artefacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: onvif-tt-results
+          name: integration-results
           path: |
             junit.xml
             results.json
+            /tmp/dut/wsd.log
+            /tmp/dut/lighttpd.err
 
-      - name: Tear down Happytime
+      - name: Tear down DUT
         if: always()
         run: |
-          if [ -n "$HAPPYTIME_PID" ]; then kill "$HAPPYTIME_PID" || true; fi
+          [ -f /tmp/dut/lighttpd.parent.pid ] && kill "$(cat /tmp/dut/lighttpd.parent.pid)" 2>/dev/null || true
+          [ -f /tmp/dut/wsd.pid ]             && kill "$(cat /tmp/dut/wsd.pid)" 2>/dev/null || true
