@@ -192,7 +192,19 @@ class NotifyHandle:
         from onvif import ONVIFService
 
         self._dut = dut
-        self.subscription_url = subscribe_resp.SubscriptionReference.Address._value_1
+        # SubscriptionReference + Address are mandatory per WS-BaseNotification.
+        # A DUT that returns SubscribeResponse without them is non-conformant;
+        # raise a precise error that the test layer can xfail / surface.
+        ref = getattr(subscribe_resp, "SubscriptionReference", None)
+        addr = getattr(ref, "Address", None) if ref is not None else None
+        url = getattr(addr, "_value_1", None) if addr is not None else None
+        if not url:
+            raise ValueError(
+                "Subscribe response has no SubscriptionReference.Address — "
+                "spec violation: WS-BaseNotification §3.1 requires the "
+                "subscription manager endpoint to be present"
+            )
+        self.subscription_url = url
         self.current_time = subscribe_resp.CurrentTime
         self.termination_time = subscribe_resp.TerminationTime
         self._alive = True
@@ -258,6 +270,7 @@ class DUT:
             config.port,
             config.user,
             config.password,
+            encrypt=False,
             **kwargs,
         )
         # zeep clients are created on demand by ONVIFCamera; we attach our

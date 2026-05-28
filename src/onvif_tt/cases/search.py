@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import time
 import pytest
-import zeep.exceptions
 
 from ..registry import register
 from ..runtime.dut import DUT
@@ -52,16 +51,8 @@ def test_end_search_with_invalid_token(dut: DUT, spec) -> None:
 
     Calling EndSearch with a never-issued SearchToken must SOAP-fault.
     """
-    try:
-        dut.search.EndSearch("__definitely_not_a_real_search_token__")
-    except zeep.exceptions.Fault:
-        return
-    except Exception as exc:
-        pytest.fail(
-            f"expected SOAP Fault for invalid SearchToken, got "
-            f"{type(exc).__name__}: {exc}"
-        )
-    pytest.fail("DUT accepted EndSearch with an invalid token")
+    from ..runtime.fault import assert_soap_fault
+    assert_soap_fault(dut.search.EndSearch, "__definitely_not_a_real_search_token__")
 
 
 @register("LOCAL-SEARCH-FIND-RECORDINGS-EMPTY-SCOPE", profiles={"G"},

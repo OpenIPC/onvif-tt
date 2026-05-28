@@ -11,7 +11,6 @@ WSDL parameters — ``GetServices(False)``, ``GetCapabilities("All")``.
 from __future__ import annotations
 
 import pytest
-import zeep.exceptions
 
 from ..registry import register
 from ..runtime.dut import DUT
@@ -271,13 +270,15 @@ def test_get_system_log(dut: DUT, spec) -> None:
     We accept either path — both are spec-conformant. The test fails
     only if the device errors with something *other* than those two.
     """
-    import zeep.exceptions
+    from ..runtime.fault import looks_like_soap_fault
     for log_type in ("System", "Access"):
         try:
             resp = dut.devicemgmt.GetSystemLog(log_type)
-        except zeep.exceptions.Fault:
-            # SOAP Fault is acceptable per spec ("log unavailable").
-            continue
+        except Exception as exc:
+            if looks_like_soap_fault(exc):
+                # SOAP Fault is acceptable per spec ("log unavailable").
+                continue
+            raise
         # Non-Fault response — must carry the SystemLog structure.
         assert resp is not None, (
             f"GetSystemLog({log_type}) returned None with no fault"
@@ -346,12 +347,5 @@ def test_soap_fault_on_invalid_capability(dut: DUT, spec) -> None:
     """BASE.html#tc.DEVICE-1-1-9 — DUT returns SOAP 1.2 fault for an
     invalid GetCapabilities category.
     """
-    try:
-        dut.devicemgmt.GetCapabilities("ThisIsNotARealCategory")
-    except zeep.exceptions.Fault:
-        return  # pass — fault is what the spec demands
-    except Exception as exc:
-        pytest.fail(
-            f"expected a SOAP Fault, got {type(exc).__name__}: {exc}"
-        )
-    pytest.fail("DUT accepted invalid GetCapabilities category without fault")
+    from ..runtime.fault import assert_soap_fault
+    assert_soap_fault(dut.devicemgmt.GetCapabilities, "ThisIsNotARealCategory")

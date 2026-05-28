@@ -6,7 +6,7 @@ camera/encoder devices don't expose this service.
 from __future__ import annotations
 
 import pytest
-import zeep.exceptions
+from ..runtime.fault import assert_soap_fault
 
 from ..registry import register
 from ..runtime.dut import DUT
@@ -93,13 +93,7 @@ def test_receiver_delete_invalid_token(dut: DUT, spec) -> None:
     """RECEIVER.html#tc.RECEIVER-2-1-10 — DeleteReceiver with invalid
     token → SOAP Fault.
     """
-    try:
-        dut.receiver.DeleteReceiver(_INVALID_TOKEN)
-    except zeep.exceptions.Fault:
-        return
-    except Exception as exc:
-        pytest.fail(f"expected SOAP Fault, got {type(exc).__name__}: {exc}")
-    pytest.fail("DUT did not fault on DeleteReceiver(invalid token)")
+    assert_soap_fault(dut.receiver.DeleteReceiver, _INVALID_TOKEN)
 
 
 @register("RECEIVER-2-1-13", profiles={"G"}, mandatory=True,
@@ -108,13 +102,7 @@ def test_receiver_set_mode_invalid_token(dut: DUT, spec) -> None:
     """RECEIVER.html#tc.RECEIVER-2-1-13 — SetReceiverMode with invalid
     token → SOAP Fault.
     """
-    try:
-        dut.receiver.SetReceiverMode(_INVALID_TOKEN, "AlwaysConnect")
-    except zeep.exceptions.Fault:
-        return
-    except Exception as exc:
-        pytest.fail(f"expected SOAP Fault, got {type(exc).__name__}: {exc}")
-    pytest.fail("DUT did not fault on SetReceiverMode(invalid token)")
+    assert_soap_fault(dut.receiver.SetReceiverMode, _INVALID_TOKEN, "AlwaysConnect")
 
 
 @register("RECEIVER-2-1-19", profiles={"G"}, mandatory=True,
@@ -133,10 +121,4 @@ def test_receiver_configure_invalid_token(dut: DUT, spec) -> None:
             "Transport": {"Protocol": "RTSP"},
         },
     }
-    try:
-        dut.receiver.ConfigureReceiver(cfg)
-    except zeep.exceptions.Fault:
-        return
-    except Exception as exc:
-        pytest.fail(f"expected SOAP Fault, got {type(exc).__name__}: {exc}")
-    pytest.fail("DUT did not fault on ConfigureReceiver(invalid token)")
+    assert_soap_fault(dut.receiver.ConfigureReceiver, cfg)

@@ -7,10 +7,10 @@ via ``--allow-writes`` once we add that flag).
 from __future__ import annotations
 
 import pytest
-import zeep.exceptions
 
 from ..registry import register
 from ..runtime.dut import DUT
+from ..runtime.fault import assert_soap_fault
 
 
 @register("PTZ-1-1-1", profiles={"S"}, mandatory=False,
@@ -59,13 +59,7 @@ def test_ptz_soap_fault_invalid_node(dut: DUT, spec) -> None:
     Querying a bogus PTZ node token must return a SOAP fault, not silently
     succeed with empty data.
     """
-    try:
-        dut.ptz.GetNode("__definitely_not_a_real_token__")
-    except zeep.exceptions.Fault:
-        return
-    except Exception as exc:
-        pytest.fail(f"expected SOAP Fault, got {type(exc).__name__}: {exc}")
-    pytest.fail("DUT did not fault on invalid PTZ node token")
+    assert_soap_fault(lambda: dut.ptz.GetNode("__definitely_not_a_real_token__"))
 
 
 # ---------------------------------------------------------------------------

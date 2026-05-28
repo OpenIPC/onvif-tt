@@ -20,7 +20,7 @@ tests that come after.
 from __future__ import annotations
 
 import pytest
-import zeep.exceptions
+from ..runtime.fault import assert_soap_fault
 
 from ..registry import register
 from ..runtime.dut import DUT, DUTConfig
@@ -76,17 +76,19 @@ def test_auth_wrong_password_rejected(dut: DUT, spec) -> None:
     """
     if not dut.config.user:
         pytest.skip("anonymous run — no credentials to test")
-    bad = _dut_with_creds(dut, dut.config.user, "definitely-not-the-password")
+    # python-onvif-zeep's DUT construction itself calls GetCapabilities
+    # (via ONVIFCamera.update_xaddrs), so the auth fault surfaces at
+    # the constructor on devices that gate every op behind auth. Wrap
+    # the construction; either the construction faults (early-rejection)
+    # or it succeeds and we then verify the actual privileged op faults.
     try:
-        bad.devicemgmt.GetNetworkInterfaces()
-    except zeep.exceptions.Fault:
-        return  # ✓ a SOAP fault is the correct rejection
+        bad = _dut_with_creds(dut, dut.config.user, "definitely-not-the-password")
     except Exception as exc:
-        pytest.fail(
-            f"expected SOAP Fault for wrong password, got "
-            f"{type(exc).__name__}: {exc}"
-        )
-    pytest.fail("DUT accepted a privileged op with a wrong password")
+        from ..runtime.fault import looks_like_soap_fault
+        if looks_like_soap_fault(exc):
+            return  # device rejected wrong password at handshake — ✓
+        raise
+    assert_soap_fault(bad.devicemgmt.GetNetworkInterfaces)
 
 
 @register("LOCAL-AUTH-ANONYMOUS-REJECTED", profiles={"S", "T"}, mandatory=False,
@@ -107,14 +109,12 @@ def test_auth_anonymous_rejected_on_privileged_op(dut: DUT, spec) -> None:
     """
     if not dut.config.user:
         pytest.skip("test only meaningful when DUT actually requires auth")
-    anon = _dut_with_creds(dut, "", "")
+    # Same construction-time-fault pattern as wrong-password.
     try:
-        anon.devicemgmt.GetSystemLog({"LogType": "System"})
-    except zeep.exceptions.Fault:
-        return
+        anon = _dut_with_creds(dut, "", "")
     except Exception as exc:
-        pytest.fail(
-            f"expected SOAP Fault for anonymous privileged op, got "
-            f"{type(exc).__name__}: {exc}"
-        )
-    pytest.fail("DUT accepted a privileged op without authentication")
+        from ..runtime.fault import looks_like_soap_fault
+        if looks_like_soap_fault(exc):
+            return  # device rejected anonymous client at handshake — ✓
+        raise
+    assert_soap_fault(lambda: anon.devicemgmt.GetSystemLog({"LogType": "System"}))

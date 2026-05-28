@@ -15,10 +15,10 @@ both are conformant outcomes for unsupported commands.
 from __future__ import annotations
 
 import pytest
-import zeep.exceptions
 
 from ..registry import register
 from ..runtime.dut import DUT
+from ..runtime.fault import assert_soap_fault
 
 
 _DOORCONTROL_NS = "http://www.onvif.org/ver10/doorcontrol/wsdl"
@@ -91,13 +91,7 @@ def test_dc_get_door_state_invalid_token(dut: DUT, spec) -> None:
     """DOORCONTROL.html#tc.DOORCONTROL-2-1-2 — GetDoorState fault on
     invalid token.
     """
-    try:
-        dut.doorcontrol.GetDoorState(_INVALID_TOKEN)
-    except zeep.exceptions.Fault:
-        return
-    except Exception as exc:
-        pytest.fail(f"expected SOAP Fault, got {type(exc).__name__}: {exc}")
-    pytest.fail("DUT did not fault on invalid door token")
+    assert_soap_fault(lambda: dut.doorcontrol.GetDoorState(_INVALID_TOKEN))
 
 
 @register("DOORCONTROL-2-1-3", profiles={"D"}, mandatory=True,
@@ -120,13 +114,7 @@ def test_dc_get_door_info_invalid_token(dut: DUT, spec) -> None:
     """DOORCONTROL.html#tc.DOORCONTROL-2-1-4 — GetDoorInfo fault on
     invalid token.
     """
-    try:
-        dut.doorcontrol.GetDoorInfo([_INVALID_TOKEN])
-    except zeep.exceptions.Fault:
-        return
-    except Exception as exc:
-        pytest.fail(f"expected SOAP Fault, got {type(exc).__name__}: {exc}")
-    pytest.fail("DUT did not fault on invalid door token")
+    assert_soap_fault(lambda: dut.doorcontrol.GetDoorInfo([_INVALID_TOKEN]))
 
 
 @register("DOORCONTROL-2-1-8", profiles={"D"}, mandatory=True,
@@ -170,16 +158,7 @@ _DOOR_COMMANDS = (
 def _make_invalid_token_test(op_name: str):
     def _test(dut: DUT, spec) -> None:
         op = getattr(dut.doorcontrol, op_name)
-        try:
-            op(_INVALID_TOKEN)
-        except zeep.exceptions.Fault:
-            return
-        except Exception as exc:
-            pytest.fail(
-                f"expected SOAP Fault for {op_name}(invalid token), "
-                f"got {type(exc).__name__}: {exc}"
-            )
-        pytest.fail(f"DUT did not fault on {op_name}(invalid token)")
+        assert_soap_fault(op, _INVALID_TOKEN)
     _test.__doc__ = (
         f"DOORCONTROL.html — {op_name} with invalid token must SOAP-fault."
     )
@@ -217,18 +196,21 @@ def _make_command_supported_or_fault_test(op_name: str):
     def _test(dut: DUT, spec) -> None:
         token = _first_door_token(dut)
         op = getattr(dut.doorcontrol, op_name)
+        from ..runtime.fault import looks_like_soap_fault
         try:
             op(token)
             # Successful → DUT supports this op. Fine.
-        except zeep.exceptions.Fault as fault:
+        except Exception as exc:
+            if not looks_like_soap_fault(exc):
+                raise
             # Acceptable per spec — DUT signals unsupported via fault.
-            msg = str(fault).lower()
+            msg = str(exc).lower()
             assert any(k in msg for k in (
                 "actionnotsupported", "methodnotsupported",
                 "notsupported", "operation",
             )), (
                 f"{op_name} returned a fault, but the fault code/string "
-                f"doesn't look like an unsupported-command signal: {fault}"
+                f"doesn't look like an unsupported-command signal: {exc}"
             )
     _test.__doc__ = (
         f"DOORCONTROL — {op_name} either succeeds or returns a "

@@ -10,10 +10,10 @@ Media service's video/audio sources.
 from __future__ import annotations
 
 import pytest
-import zeep.exceptions
 
 from ..registry import register
 from ..runtime.dut import DUT
+from ..runtime.fault import assert_soap_fault
 
 
 _INVALID_TOKEN = "__definitely_not_a_real_io_token__"
@@ -74,13 +74,7 @@ def test_io_set_relay_output_settings_invalid_token(dut: DUT, spec) -> None:
         "Properties": {"Mode": "Bistable", "IdleState": "open",
                        "DelayTime": "PT0S"},
     }
-    try:
-        dut.deviceio.SetRelayOutputSettings(req)
-    except zeep.exceptions.Fault:
-        return
-    except Exception as exc:
-        pytest.fail(f"expected SOAP Fault, got {type(exc).__name__}: {exc}")
-    pytest.fail("DUT did not fault on invalid relay-output token")
+    assert_soap_fault(lambda: dut.deviceio.SetRelayOutputSettings(req))
 
 
 @register("DEVICEIO-1-2-1", profiles={"D"}, mandatory=False,

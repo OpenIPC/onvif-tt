@@ -9,6 +9,7 @@ import pytest
 
 from ..registry import register
 from ..runtime.dut import DUT
+from ..runtime.fault import assert_soap_fault
 
 
 def _first_video_source_token(dut: DUT) -> str:
@@ -115,14 +116,7 @@ def test_imaging_get_move_options_invalid_token(dut: DUT, spec) -> None:
 
     Must SOAP-fault for a token that doesn't exist.
     """
-    import zeep.exceptions
-    try:
-        dut.imaging.GetMoveOptions("__definitely_not_a_real_token__")
-    except zeep.exceptions.Fault:
-        return
-    except Exception as exc:
-        pytest.fail(f"expected SOAP Fault, got {type(exc).__name__}: {exc}")
-    pytest.fail("DUT did not fault on invalid VideoSourceToken")
+    assert_soap_fault(dut.imaging.GetMoveOptions, "__definitely_not_a_real_token__")
 
 
 @register("IMAGING-2-1-17", profiles={"S", "T"}, mandatory=False,
@@ -133,14 +127,7 @@ def test_imaging_get_move_options_invalid_token(dut: DUT, spec) -> None:
           }])
 def test_imaging_get_status_invalid_token(dut: DUT, spec) -> None:
     """IMAGING.html#tc.IMAGING-2-1-17 — GETSTATUS – INVALID VIDEOSOURCETOKEN."""
-    import zeep.exceptions
-    try:
-        dut.imaging.GetStatus("__definitely_not_a_real_token__")
-    except zeep.exceptions.Fault:
-        return
-    except Exception as exc:
-        pytest.fail(f"expected SOAP Fault, got {type(exc).__name__}: {exc}")
-    pytest.fail("DUT did not fault on invalid VideoSourceToken")
+    assert_soap_fault(dut.imaging.GetStatus, "__definitely_not_a_real_token__")
 
 
 # ---------------------------------------------------------------------------
@@ -249,11 +236,12 @@ def test_imaging_stop(dut: DUT, spec) -> None:
     Stop on a stationary motor must either return StopResponse or fault
     with ActionNotSupported. Both are spec-conformant.
     """
-    import zeep.exceptions
+    from ..runtime.fault import looks_like_soap_fault
     token = _first_video_source_token(dut)
     try:
         dut.imaging.Stop(token)
         # StopResponse body is empty by spec; success = no Fault.
-    except zeep.exceptions.Fault:
-        # ActionNotSupported is acceptable.
-        return
+    except Exception as exc:
+        if looks_like_soap_fault(exc):
+            return  # ActionNotSupported is acceptable.
+        raise

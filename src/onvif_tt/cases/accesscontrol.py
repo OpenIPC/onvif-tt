@@ -13,10 +13,10 @@ all, so on the OpenIPC reference these tests all SKIP.
 from __future__ import annotations
 
 import pytest
-import zeep.exceptions
 
 from ..registry import register
 from ..runtime.dut import DUT
+from ..runtime.fault import assert_soap_fault
 
 
 _ACCESSCONTROL_NS = "http://www.onvif.org/ver10/accesscontrol/wsdl"
@@ -95,13 +95,7 @@ def test_ac_get_access_point_info_invalid_token(dut: DUT, spec) -> None:
     """ACCESSCONTROL.html#tc.ACCESSCONTROL-2-1-2 — GET ACCESS POINT INFO
     WITH INVALID TOKEN. Spec demands a SOAP Fault.
     """
-    try:
-        dut.accesscontrol.GetAccessPointInfo(["__definitely_not_a_real_token__"])
-    except zeep.exceptions.Fault:
-        return
-    except Exception as exc:
-        pytest.fail(f"expected SOAP Fault, got {type(exc).__name__}: {exc}")
-    pytest.fail("DUT did not fault on invalid access-point token")
+    assert_soap_fault(lambda: dut.accesscontrol.GetAccessPointInfo(["__definitely_not_a_real_token__"]))
 
 
 @register("ACCESSCONTROL-2-1-5", profiles={"A"}, mandatory=True,
@@ -174,13 +168,7 @@ def test_ac_get_area_info_invalid_token(dut: DUT, spec) -> None:
     """ACCESSCONTROL.html#tc.ACCESSCONTROL-3-1-2 — GET AREA INFO WITH
     INVALID TOKEN. SOAP Fault required.
     """
-    try:
-        dut.accesscontrol.GetAreaInfo(["__definitely_not_a_real_token__"])
-    except zeep.exceptions.Fault:
-        return
-    except Exception as exc:
-        pytest.fail(f"expected SOAP Fault, got {type(exc).__name__}: {exc}")
-    pytest.fail("DUT did not fault on invalid area token")
+    assert_soap_fault(lambda: dut.accesscontrol.GetAreaInfo(["__definitely_not_a_real_token__"]))
 
 
 @register("ACCESSCONTROL-3-1-10", profiles={"A"}, mandatory=True,
