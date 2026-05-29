@@ -81,25 +81,40 @@ def test_analytics_get_supported_rules(dut: DUT, spec) -> None:
     Returns the list of rule types the device implements (motion
     detector, line crossing, …). Each entry must carry a non-empty
     Name and Type qname.
+
+    python-onvif-zeep's bundled analytics.wsdl is missing the
+    GetSupportedRules operation, so we send a raw SOAP 1.2 envelope
+    and parse the response with lxml. Device-side conformance is
+    fully exercised — we just go around zeep's parsed proxy.
     """
-    from ..runtime.client_compat import (
-        call_or_skip_on_missing_op, name_type_from_envelope,
-    )
+    from ..runtime.raw_soap import raw_soap_call, ANALYTICS_NS, TT_NS
+
     token = _first_analytics_config_token(dut)
-    rules = call_or_skip_on_missing_op(dut.analytics, "GetSupportedRules", token)
-    desc = getattr(rules, "RuleDescription", None) or []
-    # Try the structured form first.
-    structured = [(getattr(r, "Name", None), getattr(r, "Type", None))
-                  for r in desc]
-    # Fall back to the raw envelope when zeep drops the Name/Type XML
-    # attributes (XSD-derivation gap on RuleDescription).
-    if structured and not any(n and t for n, t in structured):
-        structured = name_type_from_envelope(
-            dut.last_response or "", "RuleDescription",
+    body = (
+        f'<tan:GetSupportedRules xmlns:tan="{ANALYTICS_NS}">'
+        f'<tan:ConfigurationToken>{token}</tan:ConfigurationToken>'
+        f'</tan:GetSupportedRules>'
+    ).encode()
+    resp_body = raw_soap_call(dut, "analytics", body)
+
+    # RuleDescription elements live under SupportedRules in the
+    # analytics namespace, but the elements themselves are in tt:
+    # (they're typed by tt:ConfigDescription). Iterate by local
+    # name to stay namespace-tolerant.
+    rules = list(resp_body.iter(f"{{{TT_NS}}}RuleDescription"))
+    # Empty list is legal — device exposes the op but ships no rule
+    # types. Nothing to assert in that case.
+    for r in rules:
+        name = r.get("Name")
+        typ = r.get("Type")
+        assert name, (
+            "RuleDescription element on the wire is missing the Name "
+            "attribute (analytics.wsdl requires it)"
         )
-    for name, typ in structured:
-        assert name, "RuleDescription missing Name (in both parsed object and raw envelope)"
-        assert typ, "RuleDescription missing Type (in both parsed object and raw envelope)"
+        assert typ, (
+            "RuleDescription element on the wire is missing the Type "
+            "attribute (analytics.wsdl requires it)"
+        )
 
 
 @register("ANALYTICS-4-1-1", profiles={"T", "M"}, mandatory=False,
@@ -152,9 +167,32 @@ def test_analytics_get_modules(dut: DUT, spec) -> None:
 def test_analytics_get_supported_metadata(dut: DUT, spec) -> None:
     """ANALYTICS.html#tc.ANALYTICS-4-1-4 — GET SUPPORTED METADATA.
 
-    Returns the metadata streams the analytics engine can emit.
+    Returns the metadata fields the analytics engine can emit. The
+    parameter ``Type`` is optional; omitting it requests metadata for
+    every module type the device supports.
+
+    python-onvif-zeep's bundled analytics.wsdl omits GetSupportedMetadata,
+    so we POST the SOAP 1.2 envelope ourselves and assert structure
+    on the parsed response.
     """
-    from ..runtime.client_compat import call_or_skip_on_missing_op
-    token = _first_analytics_config_token(dut)
-    meta = call_or_skip_on_missing_op(dut.analytics, "GetSupportedMetadata", token)
-    assert meta is not None, "GetSupportedMetadata returned None"
+    from ..runtime.raw_soap import raw_soap_call, ANALYTICS_NS, TT_NS
+
+    body = f'<tan:GetSupportedMetadata xmlns:tan="{ANALYTICS_NS}"/>'.encode()
+    resp_body = raw_soap_call(dut, "analytics", body)
+
+    response = resp_body.find(f"{{{ANALYTICS_NS}}}GetSupportedMetadataResponse")
+    assert response is not None, (
+        "Response body does not contain a GetSupportedMetadataResponse "
+        "element in the analytics namespace"
+    )
+    # Each AnalyticsModule entry is typed by tt:MetadataInfo. The list
+    # can legally be empty (device has no modules configured), but
+    # every entry that does appear must carry a Type attribute per
+    # MetadataInfo's XSD definition.
+    modules = list(response.iter(f"{{{ANALYTICS_NS}}}AnalyticsModule"))
+    for m in modules:
+        typ = m.get("Type")
+        assert typ, (
+            "AnalyticsModule entry in GetSupportedMetadataResponse "
+            "is missing the Type attribute"
+        )
