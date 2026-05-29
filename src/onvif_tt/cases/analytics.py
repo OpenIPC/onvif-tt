@@ -82,12 +82,24 @@ def test_analytics_get_supported_rules(dut: DUT, spec) -> None:
     detector, line crossing, …). Each entry must carry a non-empty
     Name and Type qname.
     """
+    from ..runtime.client_compat import (
+        call_or_skip_on_missing_op, name_type_from_envelope,
+    )
     token = _first_analytics_config_token(dut)
-    rules = dut.analytics.GetSupportedRules(token)
+    rules = call_or_skip_on_missing_op(dut.analytics, "GetSupportedRules", token)
     desc = getattr(rules, "RuleDescription", None) or []
-    for r in desc:
-        assert getattr(r, "Name", None), "rule description missing Name"
-        assert getattr(r, "Type", None), "rule description missing Type"
+    # Try the structured form first.
+    structured = [(getattr(r, "Name", None), getattr(r, "Type", None))
+                  for r in desc]
+    # Fall back to the raw envelope when zeep drops the Name/Type XML
+    # attributes (XSD-derivation gap on RuleDescription).
+    if structured and not any(n and t for n, t in structured):
+        structured = name_type_from_envelope(
+            dut.last_response or "", "RuleDescription",
+        )
+    for name, typ in structured:
+        assert name, "RuleDescription missing Name (in both parsed object and raw envelope)"
+        assert typ, "RuleDescription missing Type (in both parsed object and raw envelope)"
 
 
 @register("ANALYTICS-4-1-1", profiles={"T", "M"}, mandatory=False,
@@ -96,12 +108,27 @@ def test_analytics_get_supported_modules(dut: DUT, spec) -> None:
     """ANALYTICS.html#tc.ANALYTICS-4-1-1 — GET SUPPORTED ANALYTICS
     MODULES.
     """
+    from ..runtime.client_compat import (
+        call_or_skip_on_missing_op, name_type_from_envelope,
+    )
     token = _first_analytics_config_token(dut)
-    modules = dut.analytics.GetSupportedAnalyticsModules(token)
+    modules = call_or_skip_on_missing_op(
+        dut.analytics, "GetSupportedAnalyticsModules", token,
+    )
     desc = getattr(modules, "AnalyticsModuleDescription", None) or []
-    for m in desc:
-        assert getattr(m, "Name", None), "module description missing Name"
-        assert getattr(m, "Type", None), "module description missing Type"
+    structured = [(getattr(m, "Name", None), getattr(m, "Type", None))
+                  for m in desc]
+    # AnalyticsModuleDescription extends ConfigDescription; the Name and
+    # Type attributes come from the base type and zeep can drop them if
+    # the derived-type wiring isn't in its registry. Fall back to the
+    # raw envelope when that happens.
+    if structured and not any(n and t for n, t in structured):
+        structured = name_type_from_envelope(
+            dut.last_response or "", "AnalyticsModuleDescription",
+        )
+    for name, typ in structured:
+        assert name, "AnalyticsModuleDescription missing Name (parsed + raw)"
+        assert typ, "AnalyticsModuleDescription missing Type (parsed + raw)"
 
 
 @register("ANALYTICS-4-1-3", profiles={"T", "M"}, mandatory=False,
@@ -127,6 +154,7 @@ def test_analytics_get_supported_metadata(dut: DUT, spec) -> None:
 
     Returns the metadata streams the analytics engine can emit.
     """
+    from ..runtime.client_compat import call_or_skip_on_missing_op
     token = _first_analytics_config_token(dut)
-    meta = dut.analytics.GetSupportedMetadata(token)
+    meta = call_or_skip_on_missing_op(dut.analytics, "GetSupportedMetadata", token)
     assert meta is not None, "GetSupportedMetadata returned None"
