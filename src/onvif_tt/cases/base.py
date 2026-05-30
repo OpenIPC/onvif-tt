@@ -253,6 +253,61 @@ def test_get_services_xaddr_valid(dut: DUT, spec) -> None:
         )
 
 
+# Map (GetCapabilities attribute → short name, WSDL namespace) for the
+# six service categories the legacy GetCapabilities envelope knows
+# about. Newer services (Media2, AccessControl, …) only appear in
+# GetServices and are out of scope of this consistency check.
+_CAPS_VS_SERVICES = (
+    ("Device",    "devicemgmt", _DEVICE_NS),
+    ("Media",     "media",      _MEDIA_NS),
+    ("Events",    "events",     _EVENTS_NS),
+    ("PTZ",       "ptz",        _PTZ_NS),
+    ("Imaging",   "imaging",    _IMAGING_NS),
+    ("Analytics", "analytics",  _ANALYTICS_NS),
+)
+
+
+@register("LOCAL-SERVICES-CAPABILITIES-CONSISTENT", profiles={"S", "T"},
+          mandatory=True, requires_services={"devicemgmt"},
+          tags={"local", "consistency"})
+def test_get_services_matches_get_capabilities(dut: DUT, spec) -> None:
+    """GetServices must enumerate every service GetCapabilities reports.
+
+    Per ONVIF Core §8.1.6, GetServices is the modern replacement for
+    GetCapabilities and **must** return every service the device
+    implements. A device that advertises (say) Analytics via the
+    legacy GetCapabilities envelope but omits it from GetServices is
+    non-conformant — clients that follow the spec's "use GetServices"
+    guidance will silently lose access to the service.
+
+    We compare only the categories GetCapabilities knows about
+    (Device, Media, Events, PTZ, Imaging, Analytics). Newer services
+    (Media2, AccessControl, …) only live in GetServices and are out
+    of scope here.
+    """
+    services = dut.devicemgmt.GetServices(False) or []
+    caps = dut.devicemgmt.GetCapabilities("All")
+    assert caps is not None, "GetCapabilities returned None"
+
+    in_services = {s.Namespace for s in services if s.XAddr}
+    missing: list[str] = []
+    for attr, short, ns in _CAPS_VS_SERVICES:
+        sec = getattr(caps, attr, None)
+        if sec is None:
+            continue
+        if not getattr(sec, "XAddr", None):
+            continue
+        # GetCapabilities advertises this service. GetServices must too.
+        if ns not in in_services:
+            missing.append(f"{short} (ns={ns})")
+    assert not missing, (
+        "GetServices does not enumerate services that GetCapabilities "
+        "advertises. ONVIF Core §8.1.6 requires GetServices to list "
+        "every service the device implements. Missing from GetServices: "
+        f"{', '.join(missing)}."
+    )
+
+
 # ---------------------------------------------------------------------------
 # BASE — SOAP fault on invalid request (DEVICE-1-1-9)
 # ---------------------------------------------------------------------------
