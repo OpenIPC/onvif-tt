@@ -24,6 +24,15 @@ from .wsa_validator import WSAValidator, WSAViolation
 log = logging.getLogger(__name__)
 
 # ONVIF service short-name → method on ONVIFCamera for create_*_service()
+class ServiceUnbindable(RuntimeError):
+    """The DUT advertises a service this client cannot construct.
+
+    Raised rather than skipped: the device may well be conformant, but we
+    cannot say either way, and a skip would misreport that as "not
+    applicable" while keeping the run green.
+    """
+
+
 _SERVICE_FACTORIES: dict[str, str] = {
     "devicemgmt": "create_devicemgmt_service",
     "media": "create_media_service",
@@ -35,7 +44,7 @@ _SERVICE_FACTORIES: dict[str, str] = {
     # against a real device — they skipped, because until now no DUT under
     # test advertised the service. Kept mapped so the skip is explicit and
     # the reason is stated, rather than surfacing as a bare AttributeError.
-    "media2": "__unsupported:media2",
+    "media2": "__unbindable:media2",
     "events": "create_events_service",
     "ptz": "create_ptz_service",
     "imaging": "create_imaging_service",
@@ -287,18 +296,36 @@ class DUT:
 
     # -- service accessors ----------------------------------------------------
 
+    def can_bind(self, name: str) -> bool:
+        """Whether a client for ``name`` can actually be constructed.
+
+        Distinct from "the DUT advertises it": a service can be advertised and
+        still be unreachable because this client has no schema for it. Tests
+        with a working alternative should branch on this; tests that genuinely
+        require the service should just access it and let the error surface.
+        """
+        spec = _SERVICE_FACTORIES.get(name)
+        return spec is not None and not spec.startswith("__unbindable:")
+
     def __getattr__(self, name: str) -> Any:
         if name in _SERVICE_FACTORIES:
             svc = self._services.get(name)
             if svc is None:
                 spec = _SERVICE_FACTORIES[name]
-                if spec.startswith("__unsupported:"):
-                    import pytest
-                    pytest.skip(
-                        f"{name}: python-onvif-zeep cannot bind this service "
-                        f"— it ships no WSDL for it and its bundled onvif.xsd "
-                        f"is too old for the ver20 types. The DUT may well "
-                        f"support it; the client cannot check."
+                if spec.startswith("__unbindable:"):
+                    # Deliberately an error, not a skip. The DUT advertises
+                    # this service; we simply cannot construct a client for it.
+                    # Skipping would report "not applicable" for a device that
+                    # does support it, and leave the run green while a whole
+                    # profile went unverified. Callers that have a working
+                    # fallback should consult can_bind() first.
+                    raise ServiceUnbindable(
+                        f"{name}: the DUT advertises this service but "
+                        f"python-onvif-zeep cannot bind it — it ships no WSDL "
+                        f"for it, and its bundled onvif.xsd predates the "
+                        f"ver20 types. This is a limitation of the client, "
+                        f"not a verdict on the device. See "
+                        f"https://github.com/OpenIPC/onvif-tt/issues/1"
                     )
                 if spec.startswith("__create_onvif_service:"):
                     # Generic path for services without a dedicated factory.

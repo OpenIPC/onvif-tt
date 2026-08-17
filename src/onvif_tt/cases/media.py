@@ -44,8 +44,14 @@ def _media_service(dut: DUT, services):
     Returns ``(svc, profile_letter)`` where profile_letter is "T" if
     media2 is used and "S" otherwise. Caller is expected to have already
     decided whether to skip if both are absent.
+
+    Advertisement is not enough on its own: media2 can be advertised and still
+    be unbindable by this client. These callers only need *a* media service, so
+    prefer media2 when it can actually be constructed and fall back to v10
+    otherwise — refusing to run a v10-capable check because v20 is out of reach
+    would lose coverage the device is entitled to.
     """
-    if "media2" in services:
+    if "media2" in services and dut.can_bind("media2"):
         return dut.media2, "T"
     if "media" in services:
         return dut.media, "S"
@@ -886,13 +892,21 @@ def test_media_options_cover_current_resolution(dut: DUT, spec) -> None:
             continue
         opts = dut.media.GetVideoEncoderConfigurationOptions(vec.token, p.token)
         assert opts is not None, f"no options for {vec.token!r}"
-        branch = getattr(opts, vec.Encoding, None) or getattr(opts, "H264", None)
-        if branch is None:
-            continue
+        # Strictly the branch for the encoding actually in use. Falling back to
+        # H264 would validate an H.264 resolution list against, say, a JPEG
+        # profile and pass — which is exactly the hole this test exists to fill.
+        branch = getattr(opts, vec.Encoding, None)
+        assert branch is not None, (
+            f"options for {vec.token!r} carry no {vec.Encoding!r} branch, so "
+            f"the encoding the profile is using has no advertised options"
+        )
         available = {
             (r.Width, r.Height)
             for r in (getattr(branch, "ResolutionsAvailable", None) or [])
         }
+        assert available, (
+            f"{vec.Encoding!r} options for {vec.token!r} list no resolutions"
+        )
         assert (vec.Resolution.Width, vec.Resolution.Height) in available, (
             f"profile {p.token!r} streams "
             f"{vec.Resolution.Width}x{vec.Resolution.Height} but options only "
