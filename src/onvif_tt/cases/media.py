@@ -19,6 +19,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -26,7 +27,30 @@ from ..registry import register
 from ..runtime.dut import DUT
 
 
-_RTSP_RE = re.compile(r"^rtsp://[^\s/]+(:\d+)?(/[^\s]*)?$")
+def _assert_rtsp_uri(uri: str, what: str) -> None:
+    """Assert ``uri`` is a well-formed ``rtsp://host[:port][/path]``.
+
+    Parsed rather than pattern-matched: a host character class permissive
+    enough for IPv6 literals and userinfo also swallows ``:abc``, so the port
+    group never gets a chance to reject a non-numeric port. urlsplit knows the
+    authority grammar, and raises on a bad port, which is the case worth
+    catching — a URI whose port is junk is one no client can dial.
+    """
+    assert uri and not any(c.isspace() for c in uri), (
+        f"{what} returned a URI with whitespace: {uri!r}"
+    )
+    parsed = urlsplit(uri)
+    assert parsed.scheme == "rtsp", (
+        f"{what} returned non-RTSP scheme {parsed.scheme!r}: {uri!r}"
+    )
+    try:
+        port = parsed.port
+    except ValueError:
+        raise AssertionError(f"{what} returned a non-numeric port: {uri!r}")
+    assert parsed.hostname, f"{what} returned no host: {uri!r}"
+    assert port is None or 0 < port < 65536, (
+        f"{what} returned an out-of-range port {port}: {uri!r}"
+    )
 
 # tt:VideoEncoding (onvif.xsd) is a *closed* enumeration. H265 is deliberately
 # absent: it has no ver10 representation and only exists as a
@@ -155,7 +179,7 @@ def test_media_get_stream_uri(dut: DUT, spec) -> None:
     stream_setup.ProfileToken = profile.token
     resp = dut.media.GetStreamUri(stream_setup)
     uri = getattr(resp, "Uri", None) or ""
-    assert _RTSP_RE.match(uri), f"GetStreamUri returned non-RTSP URL: {uri!r}"
+    _assert_rtsp_uri(uri, "GetStreamUri")
 
 
 @register("LOCAL-MEDIA-S-RTSP-LIVE", profiles={"S"}, mandatory=False,
@@ -548,7 +572,7 @@ def test_media2_get_stream_uri(dut: DUT, spec) -> None:
     req.ProfileToken = profile_token
     resp = dut.media2.GetStreamUri(req)
     uri = getattr(resp, "Uri", None) or ""
-    assert _RTSP_RE.match(uri), f"Media2.GetStreamUri returned non-RTSP: {uri!r}"
+    _assert_rtsp_uri(uri, "Media2.GetStreamUri")
 
 
 @register("LOCAL-MEDIA2-RTSP-LIVE", profiles={"T"}, mandatory=False,
@@ -858,6 +882,10 @@ def test_media_encoder_config_matches_profile(dut: DUT, spec) -> None:
             f"{vec.token!r}: GetProfiles says Encoding={vec.Encoding!r}, "
             f"GetVideoEncoderConfiguration says {single.Encoding!r}"
         )
+        for label, cfg in (("GetProfiles", vec), ("the singular getter", single)):
+            assert getattr(cfg, "Resolution", None) is not None, (
+                f"{vec.token!r}: {label} returned no Resolution"
+            )
         assert (single.Resolution.Width, single.Resolution.Height) == (
             vec.Resolution.Width, vec.Resolution.Height), (
             f"{vec.token!r}: GetProfiles says "
@@ -890,11 +918,22 @@ def test_media_options_cover_current_resolution(dut: DUT, spec) -> None:
         vec = getattr(p, "VideoEncoderConfiguration", None)
         if vec is None:
             continue
-        opts = dut.media.GetVideoEncoderConfigurationOptions(vec.token, p.token)
+        # Built as a request object rather than passed positionally: the WSDL
+        # order is (ConfigurationToken, ProfileToken) and the two are
+        # indistinguishable at a call site, so a swap would silently ask about
+        # the wrong thing. python-onvif-zeep does not forward keyword
+        # arguments, so this is the only way to name them.
+        req = dut.media.create_type("GetVideoEncoderConfigurationOptions")
+        req.ConfigurationToken = vec.token
+        req.ProfileToken = p.token
+        opts = dut.media.GetVideoEncoderConfigurationOptions(req)
         assert opts is not None, f"no options for {vec.token!r}"
         # Strictly the branch for the encoding actually in use. Falling back to
         # H264 would validate an H.264 resolution list against, say, a JPEG
         # profile and pass — which is exactly the hole this test exists to fill.
+        assert getattr(vec, "Resolution", None) is not None, (
+            f"profile {p.token!r} encoder carries no Resolution"
+        )
         branch = getattr(opts, vec.Encoding, None)
         assert branch is not None, (
             f"options for {vec.token!r} carry no {vec.Encoding!r} branch, so "
