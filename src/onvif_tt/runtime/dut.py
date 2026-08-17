@@ -27,7 +27,15 @@ log = logging.getLogger(__name__)
 _SERVICE_FACTORIES: dict[str, str] = {
     "devicemgmt": "create_devicemgmt_service",
     "media": "create_media_service",
-    "media2": "create_media2_service",
+    # python-onvif-zeep ships NO media2 WSDL and no media2 entry in its
+    # SERVICES map, so there is nothing to bind: create_media2_service does
+    # not exist, and the generic create_onvif_service path fails too because
+    # the bundled onvif.xsd predates types the ver20 WSDL references (e.g.
+    # tt:StringList). Every media2 test here has therefore never executed
+    # against a real device — they skipped, because until now no DUT under
+    # test advertised the service. Kept mapped so the skip is explicit and
+    # the reason is stated, rather than surfacing as a bare AttributeError.
+    "media2": "__unsupported:media2",
     "events": "create_events_service",
     "ptz": "create_ptz_service",
     "imaging": "create_imaging_service",
@@ -284,6 +292,14 @@ class DUT:
             svc = self._services.get(name)
             if svc is None:
                 spec = _SERVICE_FACTORIES[name]
+                if spec.startswith("__unsupported:"):
+                    import pytest
+                    pytest.skip(
+                        f"{name}: python-onvif-zeep cannot bind this service "
+                        f"— it ships no WSDL for it and its bundled onvif.xsd "
+                        f"is too old for the ver20 types. The DUT may well "
+                        f"support it; the client cannot check."
+                    )
                 if spec.startswith("__create_onvif_service:"):
                     # Generic path for services without a dedicated factory.
                     wsdl_name = spec.split(":", 1)[1]

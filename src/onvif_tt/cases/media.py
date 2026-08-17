@@ -26,7 +26,16 @@ from ..registry import register
 from ..runtime.dut import DUT
 
 
-_RTSP_RE = re.compile(r"^rtsp://[^\s]+$")
+_RTSP_RE = re.compile(r"^rtsp://[^\s/]+(:\d+)?(/[^\s]*)?$")
+
+# tt:VideoEncoding (onvif.xsd) is a *closed* enumeration. H265 is deliberately
+# absent: it has no ver10 representation and only exists as a
+# tt:VideoEncodingMimeNames value, i.e. a Media2 concept. A device that puts
+# H265 in a ver10 tt:VideoEncoderConfiguration is emitting schema-invalid XML,
+# which zeep will hand back as a plain string rather than reject — so it has
+# to be asserted here or it goes unnoticed.
+_VER10_ENCODINGS = {"JPEG", "MPEG4", "H264"}
+_VER20_ENCODINGS = {"JPEG", "MPV4-ES", "H264", "H265"}
 
 
 def _media_service(dut: DUT, services):
@@ -495,9 +504,9 @@ def test_media2_get_video_encoder_configurations(dut: DUT, spec) -> None:
         assert getattr(c, "token", None), "VEC missing token"
         enc = getattr(c, "Encoding", None)
         assert enc, "VideoEncoderConfiguration missing Encoding"
-        # Profile T-recognised codecs; warn on unknowns but don't fail.
-        assert enc in {"JPEG", "MPV4-ES", "H264", "H265"} or True, (
-            f"unexpected codec: {enc!r}"
+        assert enc in _VER20_ENCODINGS, (
+            f"Media2 Encoding {enc!r} is not a tt:VideoEncodingMimeNames "
+            f"value {sorted(_VER20_ENCODINGS)}"
         )
 
 
@@ -760,3 +769,136 @@ def test_media2_profiles_and_vec_options_consistency(dut: DUT, spec) -> None:
         )
     if not matched_any:
         pytest.skip("no media2 profile carries a VideoEncoder configuration")
+
+
+# ---------------------------------------------------------------------------
+# LOCAL-MEDIA-S-CONFIG-* — Media v10 configuration surface.
+#
+# These exist because the ver10 plural getters had no coverage at all: every
+# GetVideoEncoderConfigurations call in this file was on ``dut.media2``, so a
+# device that answered the ver10 form with a SOAP fault still ran green, and
+# a device whose singular getter disagreed with its own GetProfiles was never
+# challenged.
+# ---------------------------------------------------------------------------
+
+@register("LOCAL-MEDIA-S-ENCODER-CONFIGS", profiles={"S"}, mandatory=True,
+          requires_services={"devicemgmt", "media"},
+          tags={"local"})
+def test_media_get_video_encoder_configurations(dut: DUT, spec) -> None:
+    """Media v10 GetVideoEncoderConfigurations lists schema-valid encoders."""
+    cfgs = dut.media.GetVideoEncoderConfigurations() or []
+    assert cfgs, "Media.GetVideoEncoderConfigurations returned empty"
+    for c in cfgs:
+        assert getattr(c, "token", None), "VEC missing token"
+        enc = getattr(c, "Encoding", None)
+        assert enc in _VER10_ENCODINGS, (
+            f"ver10 Encoding {enc!r} is not a tt:VideoEncoding value "
+            f"{sorted(_VER10_ENCODINGS)} — H265 belongs in Media2"
+        )
+        # tt:VideoEncoderConfiguration's H264 branch describes an H.264
+        # stream; carrying one next to a different Encoding is a
+        # self-contradiction clients cannot resolve.
+        if enc != "H264":
+            assert getattr(c, "H264", None) is None, (
+                f"VEC {c.token!r} declares Encoding={enc!r} but carries an "
+                f"H264 configuration block"
+            )
+
+
+@register("LOCAL-MEDIA-S-SOURCE-CONFIGS", profiles={"S"}, mandatory=True,
+          requires_services={"devicemgmt", "media"},
+          tags={"local"})
+def test_media_get_video_source_configurations(dut: DUT, spec) -> None:
+    """Media v10 GetVideoSourceConfigurations lists bounded source configs."""
+    cfgs = dut.media.GetVideoSourceConfigurations() or []
+    assert cfgs, "Media.GetVideoSourceConfigurations returned empty"
+    for c in cfgs:
+        assert getattr(c, "token", None), "VSC missing token"
+        bounds = getattr(c, "Bounds", None)
+        assert bounds is not None, f"VSC {c.token!r} missing Bounds"
+        assert bounds.width > 0 and bounds.height > 0, (
+            f"VSC {c.token!r} has degenerate Bounds "
+            f"{bounds.width}x{bounds.height}"
+        )
+
+
+@register("LOCAL-MEDIA-S-ENCODER-CONFIG-CONSISTENT", profiles={"S"},
+          mandatory=True, requires_services={"devicemgmt", "media"},
+          tags={"local"})
+def test_media_encoder_config_matches_profile(dut: DUT, spec) -> None:
+    """GetVideoEncoderConfiguration(token) must agree with GetProfiles.
+
+    Both describe the same encoder. A device that hardcodes one of them
+    reports a resolution or codec the stream does not actually use, and the
+    client believes whichever it asked for last.
+    """
+    profiles = dut.media.GetProfiles() or []
+    if not profiles:
+        pytest.skip("no ver10 media profiles to cross-check")
+
+    checked = 0
+    for p in profiles:
+        vec = getattr(p, "VideoEncoderConfiguration", None)
+        if vec is None:
+            continue
+        single = dut.media.GetVideoEncoderConfiguration(vec.token)
+        assert single is not None, (
+            f"GetVideoEncoderConfiguration({vec.token!r}) returned nothing"
+        )
+        assert single.token == vec.token, (
+            f"asked for {vec.token!r}, got {single.token!r}"
+        )
+        assert single.Encoding == vec.Encoding, (
+            f"{vec.token!r}: GetProfiles says Encoding={vec.Encoding!r}, "
+            f"GetVideoEncoderConfiguration says {single.Encoding!r}"
+        )
+        assert (single.Resolution.Width, single.Resolution.Height) == (
+            vec.Resolution.Width, vec.Resolution.Height), (
+            f"{vec.token!r}: GetProfiles says "
+            f"{vec.Resolution.Width}x{vec.Resolution.Height}, "
+            f"GetVideoEncoderConfiguration says "
+            f"{single.Resolution.Width}x{single.Resolution.Height}"
+        )
+        checked += 1
+
+    if not checked:
+        pytest.skip("no profile carries a VideoEncoderConfiguration")
+
+
+@register("LOCAL-MEDIA-S-OPTIONS-COVER-PROFILE", profiles={"S"},
+          mandatory=True, requires_services={"devicemgmt", "media"},
+          tags={"local"})
+def test_media_options_cover_current_resolution(dut: DUT, spec) -> None:
+    """The encoder options must offer the resolution the profile is using.
+
+    Otherwise a client cannot write back the configuration it just read, and
+    a UI built from the options list silently caps the camera below what it
+    is actually streaming.
+    """
+    profiles = dut.media.GetProfiles() or []
+    if not profiles:
+        pytest.skip("no ver10 media profiles to cross-check")
+
+    checked = 0
+    for p in profiles:
+        vec = getattr(p, "VideoEncoderConfiguration", None)
+        if vec is None:
+            continue
+        opts = dut.media.GetVideoEncoderConfigurationOptions(vec.token, p.token)
+        assert opts is not None, f"no options for {vec.token!r}"
+        branch = getattr(opts, vec.Encoding, None) or getattr(opts, "H264", None)
+        if branch is None:
+            continue
+        available = {
+            (r.Width, r.Height)
+            for r in (getattr(branch, "ResolutionsAvailable", None) or [])
+        }
+        assert (vec.Resolution.Width, vec.Resolution.Height) in available, (
+            f"profile {p.token!r} streams "
+            f"{vec.Resolution.Width}x{vec.Resolution.Height} but options only "
+            f"offer {sorted(available)}"
+        )
+        checked += 1
+
+    if not checked:
+        pytest.skip("no profile carries a VideoEncoderConfiguration")
