@@ -132,9 +132,14 @@ def test_rtss_concurrent_streams(dut: DUT, spec) -> None:
     # Determine how many sessions the DUT claims to support.
     advertised = 1
     try:
-        opts = dut.media.GetVideoEncoderConfigurationOptions(
-            profile_token, profiles[0].VideoEncoderConfiguration.token
-        )
+        # The WSDL order is (ConfigurationToken, ProfileToken); these were
+        # passed the other way round, so the device was being asked about a
+        # configuration named by a profile token. Named via the request type
+        # so the order cannot drift again.
+        req = dut.media.create_type("GetVideoEncoderConfigurationOptions")
+        req.ConfigurationToken = profiles[0].VideoEncoderConfiguration.token
+        req.ProfileToken = profile_token
+        opts = dut.media.GetVideoEncoderConfigurationOptions(req)
         # GuaranteedNumberOfVideoEncoderInstances may live in several
         # places depending on the WSDL version; try a few.
         gnvei = (
