@@ -28,6 +28,32 @@
       "type": "array",
       "items": { "$ref": "#/$defs/Result" }
     },
+    "auth": {
+      "type": "object",
+      "description": "What the DUT accepted for WS-Security message-level security, settled once per run. `accepted` of \"PasswordText\" together with \"PasswordDigest\" in `rejected` means the device requires the password in cleartext and refuses the digest form ONVIF Core mandates — see SECURITY-1-1-1.",
+      "required": ["requested", "accepted", "rejected"],
+      "properties": {
+        "requested": { "type": "string", "enum": ["auto", "digest", "text", "none"] },
+        "accepted": {
+          "type": ["string", "null"],
+          "enum": ["PasswordDigest", "PasswordText", "none", null],
+          "description": "Null when no password type was accepted at all."
+        },
+        "rejected": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["PasswordDigest", "PasswordText"] }
+        },
+        "clock_offset_s": {
+          "type": ["number", "null"],
+          "description": "Device clock minus host clock, in seconds, measured only if an authentication failure prompted a check. Null if never measured."
+        },
+        "clock_probe_refused": {
+          "type": "boolean",
+          "description": "True if the DUT would not answer an unauthenticated GetSystemDateAndTime, which makes clock-skew recovery impossible — the diagnostic is gated behind the authentication it exists to diagnose."
+        }
+      },
+      "additionalProperties": false
+    },
     "schema_violations": {
       "type": "array",
       "description": "Run-level roll-up: one entry per DISTINCT structural schema violation, deduplicated across tests. A single malformed response is hit by every test that calls that operation, so the per-result `schema_violations` counts failures while this counts defects. Absent when the run found none.",

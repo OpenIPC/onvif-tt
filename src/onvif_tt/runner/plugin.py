@@ -54,6 +54,14 @@ def pytest_addoption(parser):  # noqa: D401
              "on the LAN. Explicit flag required to avoid accidents.",
     )
     group.addoption(
+        "--auth", default="auto", choices=("auto", "digest", "text", "none"),
+        help="WS-Security UsernameToken password type. 'auto' (default) "
+             "tries PasswordDigest and falls back to PasswordText, recording "
+             "which the device accepted — SECURITY-1-1-1 then reports a "
+             "device that needed the fallback. 'none' for devices with "
+             "authentication disabled.",
+    )
+    group.addoption(
         "--no-schema-validation", action="store_true",
         help="Don't validate responses against the ONVIF schema. On by "
              "default: a test whose response was missing a mandatory "
@@ -122,6 +130,31 @@ def _id_for_item(item) -> str | None:
 # ---------------------------------------------------------------------------
 
 _results: list[dict[str, Any]] = []
+_auth_state: dict[str, Any] | None = None
+
+
+def auth_summary(auth) -> dict[str, Any]:
+    """Serialise the negotiated auth state for the report."""
+    return {
+        "requested": auth.requested.value,
+        "accepted": auth.accepted,
+        "rejected": list(auth.rejected),
+        "clock_offset_s": (auth.clock_offset.total_seconds()
+                           if auth.clock_offset is not None else None),
+        "clock_probe_refused": auth.clock_probe_refused,
+    }
+
+
+def pytest_sessionstart(session):
+    """Reset module state.
+
+    ``onvif-tt run`` calls ``pytest.main()`` in-process, so these globals
+    outlive a run. Without this, a second invocation appends to the first
+    one's results and can inherit the previous target's auth verdict.
+    """
+    _results.clear()
+    global _auth_state
+    _auth_state = None
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -170,6 +203,13 @@ def _stash_dut_state(item) -> None:
         # wsa_violations these are NOT cleared here — dispatch clears them
         # immediately before each test body, so that fixture-time traffic
         # isn't attributed to whichever test ran first.
+        # Auth is a session-level fact, but it has to ride the per-test
+        # channel: under xdist the DUT fixture lives in the worker and only
+        # report attributes cross back to the controller that writes the
+        # JSON. Same reason the envelopes travel this way.
+        item.user_properties.append(
+            ("onvif_tt_auth", auth_summary(dut.session.auth)))
+
         item.user_properties.append(("onvif_tt_schema_violations", [
             {"operation": v.operation, "code": v.code,
              "path": v.path, "detail": v.detail}
@@ -232,6 +272,11 @@ def pytest_runtest_logreport(report):
         sv = props["onvif_tt_schema_violations"] or []
         if sv:
             rec["schema_violations"] = sv
+    if props.get("onvif_tt_auth"):
+        # Last writer wins: negotiation settles once and then never changes,
+        # so any test's copy is the session's verdict.
+        global _auth_state
+        _auth_state = props["onvif_tt_auth"]
 
     _results.append(rec)
 
@@ -310,6 +355,8 @@ def pytest_sessionfinish(session, exitstatus):  # noqa: D401
         "summary": summary,
         "results": _results,
     }
+    if _auth_state is not None:
+        payload["auth"] = _auth_state
     distinct = _distinct_schema_violations()
     if distinct:
         payload["schema_violations"] = distinct
