@@ -24,17 +24,30 @@ per the table in :mod:`.services`. This is the same shape
 from __future__ import annotations
 
 import collections
+import datetime
 import logging
 from dataclasses import dataclass, field
 from typing import Any
 
 from . import services as service_table
+from .auth import (
+    SYSTEM_DATE_TIME_ENVELOPE,
+    AuthMode,
+    AuthState,
+    candidates,
+    device_utc_from_response,
+    is_auth_failure,
+)
 from .response_validator import ResponseValidator, SchemaViolation
 from .schema_store import VendoredSchemaTransport, local_path
 from .soap_trace import SoapTrace
 from .wsa_validator import WSAValidator, WSAViolation
 
 log = logging.getLogger(__name__)
+
+#: Below this, host and device clocks agree closely enough that skew cannot
+#: be what a device is objecting to, so there is nothing to retry.
+_CLOCK_SKEW_TOLERANCE = datetime.timedelta(seconds=5)
 
 
 class ServiceUnbindable(RuntimeError):
@@ -52,6 +65,10 @@ class DUTConfig:
     port: int = 80
     user: str = ""
     password: str = ""
+    auth: AuthMode = AuthMode.AUTO
+    """Which WS-Security UsernameToken password type to use. ``AUTO``
+    negotiates: PasswordDigest first, PasswordText as fallback. See
+    :mod:`.auth` for why the default is not simply PasswordDigest."""
     timeout: float = 10.0
     """Connect/read budget for a single HTTP exchange. Deliberately not
     applied as zeep's ``operation_timeout``: ``PullMessages`` blocks for
@@ -92,6 +109,10 @@ class DUTSession:
         default_factory=lambda: collections.deque(maxlen=64)
     )
     subscriptions: list[Any] = field(default_factory=list)
+    auth: AuthState = field(default_factory=AuthState)
+    """What the DUT accepted for message-level security. SECURITY-1-1-1
+    reads this rather than re-probing, so the verdict comes from the same
+    exchange the rest of the suite authenticated with."""
     wsa_violations: list[WSAViolation] = field(default_factory=list)
     schema_violations: list[SchemaViolation] = field(default_factory=list)
     """Structural schema defects seen in responses during the current test.
@@ -303,20 +324,134 @@ class DUT:
         # legitimately blocks for the subscription's timeout (PT60S), which
         # config.timeout (a connect budget) must not cut short.
         self._transport = VendoredSchemaTransport(timeout=config.timeout)
+        self.session.auth.requested = config.auth
+        # First candidate for the requested mode; negotiation may move on to
+        # the next one when the device refuses this. NONE means no
+        # credentials, which python-onvif-zeep expresses as an empty user.
+        cands = candidates(config.auth)
+        self._auth_candidates = list(cands)
         self._camera = _make_camera(
             config.host,
             config.port,
-            config.user,
-            config.password,
-            encrypt=False,
+            config.user if cands else "",
+            config.password if cands else "",
+            encrypt=cands[0][1] if cands else False,
             transport=self._transport,
         )
+        if not cands:
+            self.session.auth.accepted = "none"
         # Services are constructed on demand in __getattr__.
         self._services: dict[str, Any] = {}
         # Every zeep client we've built, including the subscription-rooted
         # bindings that never become entries in _services. The response
         # validator resolves QNames against this.
         self.zeep_clients: list[Any] = []
+        self._negotiating = False
+
+    # -- authentication -------------------------------------------------------
+
+    def _reset_clients(self) -> None:
+        """Drop every bound client so the next access rebuilds it.
+
+        Credentials are baked into each ``ONVIFService`` at construction, so
+        changing the password type or the clock offset means rebuilding.
+        """
+        self._services.clear()
+        self.zeep_clients.clear()
+
+    def _try_auth(self, label: str, use_digest: bool) -> bool:
+        """Attempt one password type. True if the DUT accepted it.
+
+        Probes with ``GetDeviceInformation`` — universally implemented, and
+        the same operation ``LOCAL-AUTH-*`` uses. A device that ignores
+        credentials entirely will of course accept anything here; that is a
+        different defect and ``LOCAL-AUTH-ANONYMOUS-REJECTED`` is what catches
+        it.
+        """
+        self._camera.encrypt = use_digest
+        self._reset_clients()
+        try:
+            self.devicemgmt.GetDeviceInformation()
+        except Exception as exc:  # noqa: BLE001
+            if not is_auth_failure(exc):
+                raise  # transport failure, not a verdict on this mode
+            log.debug("DUT refused %s: %s", label, exc)
+            if label not in self.session.auth.rejected:
+                self.session.auth.rejected.append(label)
+            return False
+        self.session.auth.accepted = label
+        return True
+
+    def _negotiate_auth(self) -> None:
+        """Settle on a password type the DUT accepts, once per session."""
+        if (self._negotiating or self.session.auth.accepted
+                or not self._auth_candidates):
+            return
+        self._negotiating = True
+        try:
+            for label, use_digest in self._auth_candidates:
+                if self._try_auth(label, use_digest):
+                    return
+            self._retry_with_clock_offset()
+        finally:
+            self._negotiating = False
+
+    def _probe_device_time(self) -> datetime.datetime | None:
+        """The device's UTC clock, asked with no credentials at all.
+
+        Posted raw rather than through zeep: python-onvif-zeep always attaches
+        a UsernameToken, and an *empty* one is still a token — verified that a
+        device refuses it just as readily as a wrong one, which would defeat
+        the point of a pre-auth probe.
+        """
+        resp = self._transport.session.post(
+            self._xaddr_for("devicemgmt"),
+            data=SYSTEM_DATE_TIME_ENVELOPE,
+            headers={"Content-Type": "application/soap+xml; charset=utf-8"},
+            timeout=self.config.timeout,
+        )
+        self.session.soap_traces.append(
+            ("response", resp.content.decode("utf-8", errors="replace")))
+        return device_utc_from_response(resp.content)
+
+    def _retry_with_clock_offset(self) -> None:
+        """Every password type was refused — is the device's clock the reason?
+
+        A ``PasswordDigest`` is computed over the ``Created`` timestamp we
+        send, and devices that enforce a freshness window on it will reject an
+        otherwise valid token from a host whose clock disagrees. This is why
+        ONVIF Core leaves ``GetSystemDateAndTime`` unauthenticated: it is
+        exactly the diagnostic to reach for once credentials have been
+        refused. Retried once, only when the measured offset is big enough to
+        plausibly be the cause, so a genuinely wrong password still fails
+        fast and honestly. Issue #5.
+        """
+        try:
+            device_utc = self._probe_device_time()
+        except Exception as exc:  # noqa: BLE001
+            log.debug("clock probe failed, leaving auth as refused: %s", exc)
+            return
+        if device_utc is None:
+            self.session.auth.clock_probe_refused = True
+            log.warning(
+                "DUT would not answer an unauthenticated GetSystemDateAndTime, "
+                "so clock skew cannot be ruled out as the cause of the "
+                "authentication failure")
+            return
+        offset = device_utc - datetime.datetime.utcnow()
+        self.session.auth.clock_offset = offset
+        if abs(offset) <= _CLOCK_SKEW_TOLERANCE:
+            return  # clocks agree; the credentials really are being refused
+        log.warning(
+            "DUT clock differs from host by %s — retrying authentication with "
+            "the offset applied to wsu:Created", offset)
+        self._camera.dt_diff = offset
+        for label, use_digest in self._auth_candidates:
+            if self._try_auth(label, use_digest):
+                log.warning("authenticated as %s after correcting for clock "
+                            "skew of %s", label, offset)
+                return
+        self._camera.dt_diff = None  # skew wasn't it; don't distort later calls
 
     # -- service accessors ----------------------------------------------------
 
@@ -431,6 +566,11 @@ class DUT:
     def __getattr__(self, name: str) -> Any:
         if service_table.get(name) is None:
             raise AttributeError(name)
+        # Settle the password type before handing out any client, so every
+        # service is built with credentials the device has actually accepted.
+        # Guarded against re-entry: the negotiation probe itself goes through
+        # here to reach devicemgmt.
+        self._negotiate_auth()
         svc = self._services.get(name)
         if svc is None:
             from onvif import ONVIFService  # python-onvif-zeep

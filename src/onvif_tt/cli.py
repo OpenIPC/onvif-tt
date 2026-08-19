@@ -247,6 +247,8 @@ def _cmd_run(args, unknown_args) -> int:
         pytest_args.append(f"--id-glob={g}")
     if args.mandatory_only:
         pytest_args.append("--mandatory-only")
+    if args.auth:
+        pytest_args.append(f"--auth={args.auth}")
     if args.no_schema_validation:
         pytest_args.append("--no-schema-validation")
     if args.allow_writes:
@@ -322,6 +324,11 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="enable tests that REBOOT the DUT and wait for "
                          "recovery (separate gate beyond --allow-writes; "
                          "each test takes ~60-120 s)")
+    rp.add_argument("--auth", choices=("auto", "digest", "text", "none"),
+                    default="auto",
+                    help="WS-Security UsernameToken password type: auto "
+                         "(digest, falling back to text), digest, text, or "
+                         "none for devices with auth disabled")
     rp.add_argument("--no-schema-validation", action="store_true",
                     help="don't validate responses against the ONVIF schema "
                          "(on by default; a device that is knowingly "

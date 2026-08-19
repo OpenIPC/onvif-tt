@@ -14,6 +14,7 @@ import inspect
 import pytest
 
 from ..registry import REGISTRY, discover, match_xfail
+from ..runtime.auth import AuthMode
 from ..runtime.dut import DUT, DUTConfig
 from ..runtime.features import discover_device_info, discover_services
 from ..specs.parser import parse_corpus
@@ -45,6 +46,7 @@ def dut(request):
         port=int(port) if port else 80,
         user=request.config.getoption("--user") or "",
         password=request.config.getoption("--password") or "",
+        auth=AuthMode(request.config.getoption("--auth")),
     )
     try:
         d = DUT(cfg)
@@ -52,6 +54,10 @@ def dut(request):
         pytest.skip(f"cannot construct DUT for {target}: {exc}")
         return  # unreachable but appeases type checkers
     yield d
+    # Auth is negotiated lazily on first service access, so read it at
+    # teardown when it has actually settled.
+    from .plugin import record_auth_state
+    record_auth_state(d.session.auth)
     # Belt-and-braces: any subscription a crashing test left behind gets
     # unsubscribed here so we don't pile up state on the device.
     d.teardown_subscriptions()
@@ -59,13 +65,30 @@ def dut(request):
 
 @pytest.fixture(scope="session")
 def _services(dut):
+    # Authentication is negotiated on first service access, i.e. inside
+    # discover_services below. If it never succeeds, every service lookup
+    # comes back empty and all 147 tests skip as "DUT does not advertise
+    # services" — a green-looking run whose real cause is buried. Nothing
+    # downstream can be trusted, so stop here and say why, once.
     try:
-        return discover_services(dut)
-    except Exception as exc:
-        # Network blip — treat as "no services advertised" so individual
-        # tests skip with their `requires_services` reason rather than
-        # erroring out at the fixture level.
-        return {}
+        services = discover_services(dut)
+    except Exception:
+        services = {}
+    auth = dut.session.auth
+    if dut.config.user and auth.accepted is None:
+        pytest.exit(
+            f"DUT refused every credential type tried "
+            f"({', '.join(auth.rejected) or 'none attempted'}) for user "
+            f"{dut.config.user!r}. No test below this point could produce a "
+            f"meaningful verdict."
+            + (f" The device also would not answer an unauthenticated "
+               f"GetSystemDateAndTime, so clock skew could not be ruled out."
+               if auth.clock_probe_refused else "")
+            + (f" Requested --auth={auth.requested.value}; try --auth=auto."
+               if auth.requested is not AuthMode.AUTO else ""),
+            returncode=1,
+        )
+    return services
 
 
 @pytest.fixture(scope="session")

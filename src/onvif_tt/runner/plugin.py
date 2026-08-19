@@ -54,6 +54,14 @@ def pytest_addoption(parser):  # noqa: D401
              "on the LAN. Explicit flag required to avoid accidents.",
     )
     group.addoption(
+        "--auth", default="auto", choices=("auto", "digest", "text", "none"),
+        help="WS-Security UsernameToken password type. 'auto' (default) "
+             "tries PasswordDigest and falls back to PasswordText, recording "
+             "which the device accepted — SECURITY-1-1-1 then reports a "
+             "device that needed the fallback. 'none' for devices with "
+             "authentication disabled.",
+    )
+    group.addoption(
         "--no-schema-validation", action="store_true",
         help="Don't validate responses against the ONVIF schema. On by "
              "default: a test whose response was missing a mandatory "
@@ -122,6 +130,25 @@ def _id_for_item(item) -> str | None:
 # ---------------------------------------------------------------------------
 
 _results: list[dict[str, Any]] = []
+_auth_state: dict[str, Any] | None = None
+
+
+def record_auth_state(auth) -> None:
+    """Called once by the dut fixture, after negotiation has settled.
+
+    Run-level rather than per-test: which password type the device accepted
+    is a property of the session, and repeating it on 146 results would say
+    nothing extra.
+    """
+    global _auth_state
+    _auth_state = {
+        "requested": auth.requested.value,
+        "accepted": auth.accepted,
+        "rejected": list(auth.rejected),
+        "clock_offset_s": (auth.clock_offset.total_seconds()
+                           if auth.clock_offset is not None else None),
+        "clock_probe_refused": auth.clock_probe_refused,
+    }
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -310,6 +337,8 @@ def pytest_sessionfinish(session, exitstatus):  # noqa: D401
         "summary": summary,
         "results": _results,
     }
+    if _auth_state is not None:
+        payload["auth"] = _auth_state
     distinct = _distinct_schema_violations()
     if distinct:
         payload["schema_violations"] = distinct

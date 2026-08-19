@@ -248,6 +248,35 @@ To silence a device that is knowingly non-conformant, use `xfail_on` as
 usual; the check sits inside the xfail block. `--no-schema-validation` exists
 for working around a *validator* bug, not a device one.
 
+### 11. Auth mode is negotiated, not assumed
+
+ONVIF Core requires WS-UsernameToken with **PasswordDigest**;
+`SECURITY-1-1-1` fails a device that accepts `PasswordText`, because that
+means the password crosses the wire in cleartext.
+
+`onvif-tt` used to hardcode `encrypt=False` (PasswordText), which was
+doubly wrong: it couldn't authenticate against a conformant digest-only
+device, and against a text-accepting one it *depended* on the very defect
+`SECURITY-1-1-1` exists to catch — so it could never report it.
+
+`--auth` now selects: `auto` (default — digest, falling back to text),
+`digest`, `text`, or `none`. Negotiation happens once, lazily, on first
+service access; the outcome lands in `results.json` under `auth` and is what
+`SECURITY-1-1-1` reads. Don't re-probe in a test — read
+`dut.session.auth`, so the verdict comes from the same exchange the rest of
+the suite authenticated with.
+
+Both OpenIPC/majestic builds on the bench reject PasswordDigest and accept
+only PasswordText, so `auto` falls back and `SECURITY-1-1-1` goes red. That
+is the correct outcome, not a configuration problem.
+
+Clock skew (issue #5) rides the same path: if every password type is
+refused, the runner asks `GetSystemDateAndTime` **unauthenticated** — that
+operation is pre-auth precisely so it can be asked before credentials work —
+derives the offset, and retries once. Note python-onvif-zeep always attaches
+a UsernameToken, and an empty one is still a token that a device will
+refuse, so this probe has to be a raw POST.
+
 ## Adding a new test — quick recipe
 
 ```bash
