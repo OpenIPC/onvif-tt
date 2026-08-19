@@ -222,6 +222,32 @@ applicable" and keeps the run green. `dispatch._gate_services` splits the
 two, and `LOCAL-CLIENT-SERVICES-BINDABLE` fails on anything advertised
 that has no `ServiceDef` or no vendored WSDL.
 
+### 10. Every response is structurally validated — expect reds you didn't write
+
+`runtime/response_validator.py` checks **every** response, on by default, and
+a violation **fails the calling test**. A test whose response was missing a
+mandatory element cannot honestly claim a pass — that's the point (issue #3).
+So a test you didn't touch can go red because the device returned something
+the schema forbids. Read the failure before assuming you broke it.
+
+Three checks, from zeep's type model (`min_occurs`, attribute `required`) and
+the vendored XSDs parsed as plain XML (`xs:enumeration` facets):
+`missing-element`, `bad-enum`, `missing-attribute`.
+
+It is **not** a general XSD validator, and can't be: the published ONVIF
+schemas aren't valid XSD 1.0 — `onvif.xsd` alone has 26+ Unique Particle
+Attribution violations, so libxml2 refuses to compile them. There is no
+datatype/format checking and no undeclared-element detection. Don't read a
+clean run as "schema-valid".
+
+One device defect usually reddens many tests (a bad `GetProfiles` hits 13 on
+our reference camera). `results.json` carries a deduplicated `schema_violations`
+roll-up at the top level — read that, not the failure count.
+
+To silence a device that is knowingly non-conformant, use `xfail_on` as
+usual; the check sits inside the xfail block. `--no-schema-validation` exists
+for working around a *validator* bug, not a device one.
+
 ## Adding a new test — quick recipe
 
 ```bash

@@ -200,4 +200,21 @@ def raw_soap_call(dut: Any, service: str, body_xml: bytes,
     body = root.find(f"{{{SOAP12_NS}}}Body")
     if body is None:
         raise RuntimeError("Response envelope has no <s:Body>")
+
+    # This path bypasses zeep, so the ResponseValidator plugin never sees it.
+    # Validate here too, or the operations that need raw SOAP (the ANALYTICS
+    # ones python-onvif-zeep can't express) would be a silent hole in exactly
+    # the coverage issue #3 is closing.
+    _validate(dut, service, body)
     return body
+
+
+def _validate(dut: Any, service: str, body: etree._Element) -> None:
+    validator = getattr(dut, "_schema", None)
+    sink = getattr(getattr(dut, "session", None), "schema_violations", None)
+    if sink is None or (validator is not None and not validator.enabled):
+        return
+    from .response_validator import element_finder_for_services, validate_body
+
+    finder = element_finder_for_services((service, "devicemgmt"))
+    sink.extend(validate_body(body, finder, f"{service} (raw)"))

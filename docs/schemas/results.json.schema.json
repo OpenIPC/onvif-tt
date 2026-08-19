@@ -27,9 +27,34 @@
     "results": {
       "type": "array",
       "items": { "$ref": "#/$defs/Result" }
+    },
+    "schema_violations": {
+      "type": "array",
+      "description": "Run-level roll-up: one entry per DISTINCT structural schema violation, deduplicated across tests. A single malformed response is hit by every test that calls that operation, so the per-result `schema_violations` counts failures while this counts defects. Absent when the run found none.",
+      "items": {
+        "type": "object",
+        "required": ["code", "path", "detail", "occurrences", "tests"],
+        "properties": {
+          "code": { "$ref": "#/$defs/SchemaViolationCode" },
+          "path": { "type": "string", "description": "Element path from the response root, e.g. GetEventPropertiesResponse/MessageContentFilterDialect." },
+          "detail": { "type": "string" },
+          "occurrences": { "type": "integer", "minimum": 1 },
+          "tests": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "IDs of the tests that received this violation."
+          }
+        },
+        "additionalProperties": false
+      }
     }
   },
   "$defs": {
+    "SchemaViolationCode": {
+      "type": "string",
+      "enum": ["missing-element", "bad-enum", "missing-attribute"],
+      "description": "missing-element: a child declared minOccurs>=1 was absent. bad-enum: element text outside its type's enumeration. missing-attribute: a use=\"required\" attribute was absent."
+    },
     "Result": {
       "type": "object",
       "required": ["id", "status", "duration_s"],
@@ -72,6 +97,38 @@
         "last_response": {
           "type": ["string", "null"],
           "description": "Pretty-printed XML of the last SOAP response the DUT sent in this test."
+        },
+        "wsa_violations": {
+          "type": "array",
+          "description": "WS-Addressing defects observed in responses during this test. Recorded, not fatal — see runtime/wsa_validator.py. Absent when there were none.",
+          "items": {
+            "type": "object",
+            "required": ["operation", "code", "detail"],
+            "properties": {
+              "operation": { "type": "string" },
+              "code": {
+                "type": "string",
+                "enum": ["missing-action", "wrong-action-suffix", "soap11-envelope"]
+              },
+              "detail": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "schema_violations": {
+          "type": "array",
+          "description": "Structural schema defects in responses this test received: a mandatory element or attribute absent, or a value outside its enumeration. These FAIL the test — assertions may have passed, but they ran on data the ONVIF schema does not permit. Absent when there were none.",
+          "items": {
+            "type": "object",
+            "required": ["operation", "code", "path", "detail"],
+            "properties": {
+              "operation": { "type": "string", "description": "ONVIF operation whose response carried the defect." },
+              "code": { "$ref": "#/$defs/SchemaViolationCode" },
+              "path": { "type": "string" },
+              "detail": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
         }
       },
       "additionalProperties": false
