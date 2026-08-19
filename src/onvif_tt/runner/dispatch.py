@@ -91,12 +91,38 @@ def _all_ids():
     return sorted(REGISTRY.keys())
 
 
+def _gate_services(requires, advertised, can_bind):
+    """Split a test's required services into (missing, unbindable).
+
+    These are different verdicts and must not share one outcome. *Missing*
+    means the DUT doesn't implement the service — legitimately not
+    applicable, so skip. *Unbindable* means the DUT does advertise it and
+    this client can't construct a proxy — we have no idea whether the device
+    conforms, and reporting that as a skip is how twelve Media2 tests sat
+    green without ever executing (issue #1).
+    """
+    missing = set(requires) - set(advertised)
+    unbindable = {s for s in set(requires) & set(advertised) if not can_bind(s)}
+    return missing, unbindable
+
+
 @pytest.mark.parametrize("test_id", _all_ids() or ["__no_tests_registered__"])
 def test_onvif_case(test_id, dut, _services, _device_info, spec, request):
     if test_id == "__no_tests_registered__":
         pytest.skip("No ONVIF tests registered in REGISTRY")
     impl = REGISTRY[test_id]
-    missing = impl.requires_services - set(_services)
+    missing, unbindable = _gate_services(
+        impl.requires_services, _services, dut.can_bind
+    )
+    if unbindable:
+        pytest.fail(
+            f"DUT advertises {sorted(unbindable)} but this client cannot "
+            f"bind it, so the test could not run. That is a limitation of "
+            f"onvif-tt, not a verdict on the device — but it is not a skip "
+            f"either, because a skip would claim the service was not "
+            f"applicable. Add a ServiceDef in onvif_tt/runtime/services.py "
+            f"and run `onvif-tt schemas refresh`."
+        )
     if missing:
         pytest.skip(f"DUT does not advertise services: {sorted(missing)}")
     if impl.requires_writes and not request.config.getoption("--allow-writes"):
