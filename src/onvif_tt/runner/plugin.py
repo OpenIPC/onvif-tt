@@ -53,6 +53,14 @@ def pytest_addoption(parser):  # noqa: D401
              "take ~60–120 s each and disrupt every other ONVIF client "
              "on the LAN. Explicit flag required to avoid accidents.",
     )
+    group.addoption(
+        "--no-schema-validation", action="store_true",
+        help="Don't validate responses against the ONVIF schema. On by "
+             "default: a test whose response was missing a mandatory "
+             "element cannot honestly claim a pass. Use this only to work "
+             "around a validator bug — a device that is knowingly "
+             "non-conformant should carry an xfail_on matcher instead.",
+    )
     group.addoption("--json-report", default="", help="Path to JSON result file.")
     group.addoption(
         "--corpus-dir",
@@ -120,11 +128,22 @@ _results: list[dict[str, Any]] = []
 def pytest_runtest_makereport(item, call):
     """Worker-side: stash SOAP envelopes on the item's user_properties
     so they travel back to master under xdist (workers and master are
-    separate processes; the global ``_results`` list isn't shared)."""
-    outcome = yield
-    rep = outcome.get_result()
-    if rep.when != "call":
-        return
+    separate processes; the global ``_results`` list isn't shared).
+
+    The stash must happen **before** the yield. ``TestReport.__init__`` does
+    ``self.user_properties = list(user_properties or [])`` — a copy, taken
+    when the report is built during the yield. Appending afterwards mutates
+    the item's list, which nothing reads again, so the data silently never
+    reaches the report. That is why ``last_request`` / ``last_response`` /
+    ``wsa_violations`` were absent from every results.json despite being
+    documented in docs/schemas/ and in docs/ai-readme.md.
+    """
+    if call.when == "call":
+        _stash_dut_state(item)
+    yield
+
+
+def _stash_dut_state(item) -> None:
     funcargs = getattr(item, "funcargs", None) or {}
     dut = funcargs.get("dut")
     if dut is not None:
@@ -146,6 +165,16 @@ def pytest_runtest_makereport(item, call):
         # Clear so the next test starts with a fresh slate (DUT is
         # session-scoped, the violation list otherwise accumulates).
         dut.session.wsa_violations.clear()
+
+        # Schema violations recorded by the ResponseValidator plugin. Unlike
+        # wsa_violations these are NOT cleared here — dispatch clears them
+        # immediately before each test body, so that fixture-time traffic
+        # isn't attributed to whichever test ran first.
+        item.user_properties.append(("onvif_tt_schema_violations", [
+            {"operation": v.operation, "code": v.code,
+             "path": v.path, "detail": v.detail}
+            for v in (getattr(dut.session, "schema_violations", []) or [])
+        ]))
 
 
 def pytest_runtest_logreport(report):
@@ -199,6 +228,10 @@ def pytest_runtest_logreport(report):
         wsa = props["onvif_tt_wsa_violations"] or []
         if wsa:
             rec["wsa_violations"] = wsa
+    if "onvif_tt_schema_violations" in props:
+        sv = props["onvif_tt_schema_violations"] or []
+        if sv:
+            rec["schema_violations"] = sv
 
     _results.append(rec)
 
@@ -217,6 +250,49 @@ def _id_for_report(report) -> str | None:
     return nodeid[start:end]
 
 
+def _distinct_schema_violations() -> list[dict[str, Any]]:
+    """Collapse per-test schema violations into one entry per real defect.
+
+    A single malformed response is hit by every test that calls the
+    operation — on the reference camera one bad ``GetProfiles`` reddens 13
+    tests. Failing all 13 is right (none of them verified what they claimed),
+    but reading the run as 13 problems is not. Grouped on (code, path,
+    detail) with the affected test IDs attached.
+    """
+    grouped: dict[tuple, dict[str, Any]] = {}
+    for r in _results:
+        for v in r.get("schema_violations", []):
+            key = (v["code"], v["path"], v["detail"])
+            entry = grouped.get(key)
+            if entry is None:
+                entry = grouped[key] = {
+                    "code": v["code"], "path": v["path"],
+                    "detail": v["detail"], "occurrences": 0, "tests": [],
+                }
+            entry["occurrences"] += 1
+            if r["id"] not in entry["tests"]:
+                entry["tests"].append(r["id"])
+    return sorted(grouped.values(),
+                  key=lambda e: (-e["occurrences"], e["path"]))
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    """One line stating how many *defects* the run found, not how many reds."""
+    distinct = _distinct_schema_violations()
+    if not distinct:
+        return
+    affected = {t for e in distinct for t in e["tests"]}
+    terminalreporter.write_sep("-", "ONVIF schema violations")
+    terminalreporter.write_line(
+        f"{len(distinct)} distinct schema violation(s) across "
+        f"{len(affected)} test(s):"
+    )
+    for e in distinct:
+        terminalreporter.write_line(
+            f"  x{e['occurrences']:<3} [{e['code']}] {e['path']}"
+        )
+
+
 def pytest_sessionfinish(session, exitstatus):  # noqa: D401
     path = session.config.getoption("--json-report")
     if not path:
@@ -229,13 +305,13 @@ def pytest_sessionfinish(session, exitstatus):  # noqa: D401
     for r in _results:
         summary["total"] += 1
         summary[r["status"]] = summary.get(r["status"], 0) + 1
+    payload: dict[str, Any] = {
+        "target": session.config.getoption("--target") or None,
+        "summary": summary,
+        "results": _results,
+    }
+    distinct = _distinct_schema_violations()
+    if distinct:
+        payload["schema_violations"] = distinct
     with open(path, "w") as fh:
-        json.dump(
-            {
-                "target": session.config.getoption("--target") or None,
-                "summary": summary,
-                "results": _results,
-            },
-            fh,
-            indent=2,
-        )
+        json.dump(payload, fh, indent=2)
