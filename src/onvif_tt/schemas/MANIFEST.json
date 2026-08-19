@@ -1,0 +1,190 @@
+{
+  "documents": [
+    {
+      "bytes": 23378,
+      "path": "docs.oasis-open.org/wsn/b-2.xsd",
+      "sha256": "26f0c7aa9a3719412e2e3275bc80320edb4b2dc9783bf2bb08c6378f4ca681fe",
+      "url": "http://docs.oasis-open.org/wsn/b-2.xsd"
+    },
+    {
+      "bytes": 20556,
+      "path": "docs.oasis-open.org/wsn/bw-2.wsdl",
+      "sha256": "b757495d89f0b362bc754f8d8e7ce405c96eba497a9ff7eb207ec8cb80360e9b",
+      "url": "http://docs.oasis-open.org/wsn/bw-2.wsdl"
+    },
+    {
+      "bytes": 8960,
+      "path": "docs.oasis-open.org/wsn/t-1.xsd",
+      "sha256": "ad5db0432a3885d1c8a574ba6b4058193af29bc971232c4bb6b31f8295fe3329",
+      "url": "http://docs.oasis-open.org/wsn/t-1.xsd"
+    },
+    {
+      "bytes": 5195,
+      "path": "docs.oasis-open.org/wsrf/bf-2.xsd",
+      "sha256": "7863ccf5b21105c374a405968266fa18ecd0ebe0f7b9b19cd9378656229ff468",
+      "url": "http://docs.oasis-open.org/wsrf/bf-2.xsd"
+    },
+    {
+      "bytes": 3690,
+      "path": "docs.oasis-open.org/wsrf/r-2.xsd",
+      "sha256": "07888a967e326901a348e1dda4c6025e7bfa1478903c11148f4dfffe76aa4658",
+      "url": "http://docs.oasis-open.org/wsrf/r-2.xsd"
+    },
+    {
+      "bytes": 3757,
+      "path": "docs.oasis-open.org/wsrf/rw-2.wsdl",
+      "sha256": "1e799c563e4bc6f39dda93c4060daece3a0a45b5d5a0450f7ebe8be91fc937f8",
+      "url": "http://docs.oasis-open.org/wsrf/rw-2.wsdl"
+    },
+    {
+      "bytes": 199759,
+      "path": "www.onvif.org/ver10/device/wsdl/devicemgmt.wsdl",
+      "sha256": "c66773e3da37e493f370b1ed31906a8b3eee980ccd23735245ea2dc45b87eecf",
+      "url": "https://www.onvif.org/ver10/device/wsdl/devicemgmt.wsdl"
+    },
+    {
+      "bytes": 66199,
+      "path": "www.onvif.org/ver10/deviceio.wsdl",
+      "sha256": "387b49cc10280ad57d2f18b7cfebc9b13e04392f70657e5ddb63cff763a9d199",
+      "url": "https://www.onvif.org/ver10/deviceio.wsdl"
+    },
+    {
+      "bytes": 48358,
+      "path": "www.onvif.org/ver10/events/wsdl/event.wsdl",
+      "sha256": "459518e9ce03e44b4a4f3b1e1f29d1a25bdcff5736d6b5ee58c358093737f0ea",
+      "url": "https://www.onvif.org/ver10/events/wsdl/event.wsdl"
+    },
+    {
+      "bytes": 175142,
+      "path": "www.onvif.org/ver10/media/wsdl/media.wsdl",
+      "sha256": "bb4596f47ff0f907b8113fd2c86f649faa098df0e0df9f1c5f4de34f592de1eb",
+      "url": "https://www.onvif.org/ver10/media/wsdl/media.wsdl"
+    },
+    {
+      "bytes": 80329,
+      "path": "www.onvif.org/ver10/pacs/accesscontrol.wsdl",
+      "sha256": "9fb61f2adf53a2c8b7f57911a5df5841166c078b47ab81ed2f7b9e82f676b946",
+      "url": "https://www.onvif.org/ver10/pacs/accesscontrol.wsdl"
+    },
+    {
+      "bytes": 71450,
+      "path": "www.onvif.org/ver10/pacs/doorcontrol.wsdl",
+      "sha256": "73901b2b5f31cdb68cf8a6751457e1b584c4bec6ed1de09648009d2abab1c702",
+      "url": "https://www.onvif.org/ver10/pacs/doorcontrol.wsdl"
+    },
+    {
+      "bytes": 7420,
+      "path": "www.onvif.org/ver10/pacs/types.xsd",
+      "sha256": "9fa8f5cb90fdfc088bd857e02e390b1ef3c0aa59a98d474ee4ebb7d5837c0493",
+      "url": "https://www.onvif.org/ver10/pacs/types.xsd"
+    },
+    {
+      "bytes": 16991,
+      "path": "www.onvif.org/ver10/receiver.wsdl",
+      "sha256": "0ea432b0add88c470ade144fe3f69e459eff6361963839ee59f8b95ca5b7ffb3",
+      "url": "https://www.onvif.org/ver10/receiver.wsdl"
+    },
+    {
+      "bytes": 62051,
+      "path": "www.onvif.org/ver10/recording.wsdl",
+      "sha256": "710b8a593566944683bb0e474bc7933d5e04fa060ad5a26e240a365735e05341",
+      "url": "https://www.onvif.org/ver10/recording.wsdl"
+    },
+    {
+      "bytes": 10754,
+      "path": "www.onvif.org/ver10/replay.wsdl",
+      "sha256": "7e99b9ca27d394370acc44dad7c60bb8cfa5771934077603d4e6199000c2dbfb",
+      "url": "https://www.onvif.org/ver10/replay.wsdl"
+    },
+    {
+      "bytes": 19528,
+      "path": "www.onvif.org/ver10/schema/common.xsd",
+      "sha256": "d945394fe823febcd873ed8444ccfd73f3b5234d6dfbf0e151a33f5e611b5077",
+      "url": "https://www.onvif.org/ver10/schema/common.xsd"
+    },
+    {
+      "bytes": 27084,
+      "path": "www.onvif.org/ver10/schema/metadatastream.xsd",
+      "sha256": "36c8bb786a8d9ad69496485b78807271e4c822c311f377d85ebab4bc9c646890",
+      "url": "https://www.onvif.org/ver10/schema/metadatastream.xsd"
+    },
+    {
+      "bytes": 432227,
+      "path": "www.onvif.org/ver10/schema/onvif.xsd",
+      "sha256": "1de6e9dd31a18a6773b611c4f7eaa0528f219098ddfc883b380802aa9a7ff647",
+      "url": "https://www.onvif.org/ver10/schema/onvif.xsd"
+    },
+    {
+      "bytes": 54129,
+      "path": "www.onvif.org/ver10/search.wsdl",
+      "sha256": "f52828cd17f85f8120ca6134b5c2aa036981b1af154d88db8e02b846c333327b",
+      "url": "https://www.onvif.org/ver10/search.wsdl"
+    },
+    {
+      "bytes": 21935,
+      "path": "www.onvif.org/ver20/analytics/humanbody.xsd",
+      "sha256": "2546cfc10803becbf32915bd5fd9ac7aa3a238f2902e9cb7c707de28f283489c",
+      "url": "https://www.onvif.org/ver20/analytics/humanbody.xsd"
+    },
+    {
+      "bytes": 21980,
+      "path": "www.onvif.org/ver20/analytics/humanface.xsd",
+      "sha256": "a18c420d1b0f44e5ca832ddd90a592f6247766bd65c4051a532b2b29fef71b4f",
+      "url": "https://www.onvif.org/ver20/analytics/humanface.xsd"
+    },
+    {
+      "bytes": 34002,
+      "path": "www.onvif.org/ver20/analytics/wsdl/analytics.wsdl",
+      "sha256": "eeff5a4776f318b1b56038f704802412eb4066d831c59518bb352a09d026d728",
+      "url": "https://www.onvif.org/ver20/analytics/wsdl/analytics.wsdl"
+    },
+    {
+      "bytes": 26756,
+      "path": "www.onvif.org/ver20/imaging/wsdl/imaging.wsdl",
+      "sha256": "02f222407d41b0a7aca13259603a85ab69ca1cc28899a47734abac4e3902e854",
+      "url": "https://www.onvif.org/ver20/imaging/wsdl/imaging.wsdl"
+    },
+    {
+      "bytes": 152275,
+      "path": "www.onvif.org/ver20/media/wsdl/media.wsdl",
+      "sha256": "0a1d59636910074ec4fb80b9a43f398ce208f4e38a6c7dff414eb6ddba3a1613",
+      "url": "https://www.onvif.org/ver20/media/wsdl/media.wsdl"
+    },
+    {
+      "bytes": 62047,
+      "path": "www.onvif.org/ver20/ptz/wsdl/ptz.wsdl",
+      "sha256": "6cbeaf5c8d123401d4fe1a5b99bead9b31730fcf113078fa85776c3aefae4d2b",
+      "url": "https://www.onvif.org/ver20/ptz/wsdl/ptz.wsdl"
+    },
+    {
+      "bytes": 8836,
+      "path": "www.w3.org/2001/xml.xsd",
+      "sha256": "61960fb3131e38022caad5360e2f33a3382578ab3c80cd58bd74320ede61b20c",
+      "url": "http://www.w3.org/2001/xml.xsd"
+    },
+    {
+      "bytes": 5839,
+      "path": "www.w3.org/2003/05/soap-envelope",
+      "sha256": "3ae8caa9a74e83528cc0e1a59fc12784435e8e0086e890d0e1b04d881c079bec",
+      "url": "https://www.w3.org/2003/05/soap-envelope"
+    },
+    {
+      "bytes": 511,
+      "path": "www.w3.org/2004/08/xop/include",
+      "sha256": "dff9100efce4afb21de0cf673fb7fad103672a169862ab0f12e34c312b20e60d",
+      "url": "https://www.w3.org/2004/08/xop/include"
+    },
+    {
+      "bytes": 1639,
+      "path": "www.w3.org/2005/05/xmlmime",
+      "sha256": "330ab79ecdd3a8628f12ef4cbe34351e448f9b9231bacad339881ce1a61237a2",
+      "url": "https://www.w3.org/2005/05/xmlmime"
+    },
+    {
+      "bytes": 5849,
+      "path": "www.w3.org/2005/08/addressing/ws-addr.xsd",
+      "sha256": "af806cc9af2514e9b0b07efe4e4dc42a32dad8ac08473dc025136207779d5ee9",
+      "url": "http://www.w3.org/2005/08/addressing/ws-addr.xsd"
+    }
+  ]
+}

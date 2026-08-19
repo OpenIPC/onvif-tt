@@ -19,26 +19,10 @@ from __future__ import annotations
 
 import logging
 
+from . import services as service_table
 from .dut import DUT
 
 log = logging.getLogger(__name__)
-
-# Map ONVIF service WSDL namespace → short name we use everywhere else.
-_NS_TO_SHORT = {
-    "http://www.onvif.org/ver10/device/wsdl": "devicemgmt",
-    "http://www.onvif.org/ver10/media/wsdl": "media",
-    "http://www.onvif.org/ver20/media/wsdl": "media2",
-    "http://www.onvif.org/ver10/events/wsdl": "events",
-    "http://www.onvif.org/ver20/ptz/wsdl": "ptz",
-    "http://www.onvif.org/ver20/imaging/wsdl": "imaging",
-    "http://www.onvif.org/ver20/analytics/wsdl": "analytics",
-    "http://www.onvif.org/ver10/recording/wsdl": "recording",
-    "http://www.onvif.org/ver10/search/wsdl": "search",
-    "http://www.onvif.org/ver10/replay/wsdl": "replay",
-    "http://www.onvif.org/ver10/deviceIO/wsdl": "deviceio",
-    "http://www.onvif.org/ver10/accesscontrol/wsdl": "accesscontrol",
-    "http://www.onvif.org/ver10/doorcontrol/wsdl": "doorcontrol",
-}
 
 # Map short name → attribute on GetCapabilities("All") response. Only
 # the categories the legacy envelope knows about — newer services
@@ -74,9 +58,23 @@ def discover_services(dut: DUT) -> dict[str, str]:
         log.warning("GetServices failed on %s: %s", dut.config.host, exc)
         resp = None
     for s in resp or []:
-        short = _NS_TO_SHORT.get(s.Namespace, s.Namespace)
+        sd = service_table.by_namespace(s.Namespace)
+        if sd is None:
+            # Don't file it under its raw namespace URI: that produces a key
+            # no `requires_services` entry can ever match, so every test
+            # needing the service skips as "not advertised" and the run stays
+            # green. Record it instead — LOCAL-CLIENT-SERVICES-BINDABLE fails
+            # on it and names the namespace to add to runtime/services.py.
+            dut.session.unknown_namespaces.add(s.Namespace)
+            continue
         if s.XAddr:
-            dut.session.services[short] = s.XAddr
+            dut.session.services[sd.short] = s.XAddr
+        else:
+            # Advertised with no endpoint. Silently dropping it would make
+            # the service indistinguishable from one the DUT doesn't
+            # implement, and its tests would skip as "not applicable" —
+            # the exact silent-green failure this module is guarding.
+            dut.session.advertised_without_xaddr.add(sd.short)
 
     try:
         caps = dut.devicemgmt.GetCapabilities("All")
@@ -89,6 +87,9 @@ def discover_services(dut: DUT) -> dict[str, str]:
             xaddr = getattr(sec, "XAddr", None) if sec is not None else None
             if xaddr and short not in dut.session.services:
                 dut.session.services[short] = xaddr
+                # The legacy envelope supplied an endpoint GetServices left
+                # blank, so the service is reachable after all.
+                dut.session.advertised_without_xaddr.discard(short)
 
     return dut.session.services
 

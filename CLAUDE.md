@@ -187,6 +187,41 @@ pytest tests/test_parser.py
 
 Both must succeed.
 
+### 9. Services come from our table + our schemas, not the library's
+
+`python-onvif-zeep`'s `onvif.definition.SERVICES` and its bundled
+`wsdl/` directory are **not** used. Its `onvif.xsd` is pinned at 2.4.2,
+which has no `tt:StringList` / `tt:VideoEncoder2Configuration`, and it
+has no ver20 media entry at all — so Media2 was unbindable and 12 tests
+never ran (issue #1).
+
+Instead:
+
+* `src/onvif_tt/runtime/services.py` — one `ServiceDef` row per service:
+  short name, WSDL namespace (what `GetServices` reports), WSDL URL,
+  SOAP binding. Adding a service means adding a row here. Nothing else
+  maps namespaces to short names.
+* `src/onvif_tt/schemas/` — the vendored WSDL/XSD closure, **byte-identical
+  to onvif.org** and laid out mirroring the source URL paths. ONVIF permits
+  redistribution but not modification, so never hand-edit these or rewrite
+  a `schemaLocation`. Regenerate instead:
+
+```bash
+onvif-tt schemas refresh    # transitively re-crawls from every ServiceDef
+onvif-tt schemas verify     # re-hashes the tree against MANIFEST.json
+```
+
+XAddrs come from `GetServices` — Media2 has no slot in ver10
+`GetCapabilities`, so the library's `update_xaddrs()` discovery can't see
+it. `DUT` disables that method (it also leaked a PullPoint subscription
+per run) and resolves XAddrs itself.
+
+**A service the DUT advertises but we can't bind is a failure, not a
+skip.** That's the whole lesson of issue #1: a skip reads as "not
+applicable" and keeps the run green. `dispatch._gate_services` splits the
+two, and `LOCAL-CLIENT-SERVICES-BINDABLE` fails on anything advertised
+that has no `ServiceDef` or no vendored WSDL.
+
 ## Adding a new test — quick recipe
 
 ```bash

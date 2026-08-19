@@ -5,6 +5,7 @@ Subcommands:
 * ``list``     — print catalog of test cases (filterable, JSON or human).
 * ``show``     — print one test case's full record.
 * ``corpus``   — manage the parsed corpus JSON cache.
+* ``schemas``  — manage the vendored ONVIF WSDL/XSD set.
 * ``run``      — execute registered tests against a target (delegates to pytest).
 """
 
@@ -197,6 +198,34 @@ def _cmd_corpus(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# `schemas` subcommand — the vendored ONVIF WSDL/XSD set
+# ---------------------------------------------------------------------------
+
+def _cmd_schemas(args) -> int:
+    import logging
+
+    from .runtime import schema_store
+
+    if args.schemas_cmd == "verify":
+        problems = schema_store.verify()
+        for p in problems:
+            print(p, file=sys.stderr)
+        if problems:
+            print(f"{len(problems)} problem(s) — run `onvif-tt schemas refresh`",
+                  file=sys.stderr)
+            return 1
+        print(f"{len(schema_store.manifest())} documents OK "
+              f"({schema_store.SCHEMA_ROOT})")
+        return 0
+    if args.schemas_cmd == "refresh":
+        logging.basicConfig(level=logging.INFO, format="%(message)s")
+        keys = schema_store.refresh()
+        print(f"wrote {schema_store.MANIFEST_PATH} ({len(keys)} documents)")
+        return 0
+    return 2
+
+
+# ---------------------------------------------------------------------------
 # `run` subcommand — wraps pytest
 # ---------------------------------------------------------------------------
 
@@ -270,6 +299,12 @@ def _build_parser() -> argparse.ArgumentParser:
     cp_sub.add_parser("refresh", help="re-parse corpus/html/*.html")
     cp_sub.add_parser("stats", help="counts by profile area")
     cp.set_defaults(func=_cmd_corpus)
+
+    scp = sub.add_parser("schemas", help="manage the vendored ONVIF schema set")
+    scp_sub = scp.add_subparsers(dest="schemas_cmd", required=True)
+    scp_sub.add_parser("verify", help="re-hash the tree against MANIFEST.json")
+    scp_sub.add_parser("refresh", help="re-fetch the schema closure from onvif.org")
+    scp.set_defaults(func=_cmd_schemas)
 
     rp = sub.add_parser("run", help="run registered tests against a DUT")
     rp.add_argument("--target", required=True, help="host[:port]")

@@ -54,7 +54,10 @@ onvif_tt_runner = "onvif_tt.runner.plugin"
 where = ["src"]
 
 [tool.setuptools.package-data]
-onvif_tt = ["py.typed"]
+# The vendored ONVIF schema set has to ship in the wheel — every zeep client
+# is built from it at runtime. Some documents (xmlmime, soap-envelope,
+# xop/include) have no file extension, hence the bare recursive glob.
+onvif_tt = ["py.typed", "schemas/MANIFEST.json", "schemas/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

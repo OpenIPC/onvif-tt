@@ -82,6 +82,45 @@ def _media_service(dut: DUT, services):
     return None, ""
 
 
+def _video_source_tokens(svc, prof: str) -> list[str]:
+    """Tokens of the DUT's video sources, via whichever media service.
+
+    ``GetVideoSources`` is a v10-only operation — the ver20 WSDL has no
+    such thing, since Media2 addresses sources only through
+    ``VideoSourceConfiguration.SourceToken``. Calling it on a Media2 proxy
+    raises ``AttributeError: Service has no operation 'GetVideoSources'``,
+    which is what this adaptive test did the moment media2 became bindable.
+    """
+    if prof == "T":
+        cfgs = svc.GetVideoSourceConfigurations() or []
+        # Several configurations may share one source; dedupe, keep order.
+        return list(dict.fromkeys(
+            c.SourceToken for c in cfgs if getattr(c, "SourceToken", None)
+        ))
+    return [s.token for s in (svc.GetVideoSources() or [])]
+
+
+def _media2_stream_uri(dut: DUT, profile_token: str) -> str:
+    """Media2 ``GetStreamUri`` for one profile, as a plain string.
+
+    Two shape differences from v10, both easy to get wrong and both only
+    observable once the service actually binds:
+
+    * ``Protocol`` is a direct parameter (RtspUnicast / RtspMulticast /
+      RTSP / HTTP), not a nested ``StreamSetup`` struct;
+    * ``GetStreamUriResponse`` holds a single ``xs:anyURI`` element, so zeep
+      unwraps it to a ``str``. v10 returns a ``tt:MediaUri`` *struct*, so
+      ``resp.Uri`` is right there and wrong here.
+    """
+    req = dut.media2.create_type("GetStreamUri")
+    req.Protocol = "RtspUnicast"
+    req.ProfileToken = profile_token
+    resp = dut.media2.GetStreamUri(req)
+    # Tolerate a struct too: the response is single-element per the ver20
+    # WSDL, but zeep only unwraps when it parses against that schema.
+    return resp if isinstance(resp, str) else (getattr(resp, "Uri", None) or "")
+
+
 def _first_profile_token(dut: DUT, services) -> str:
     svc, _ = _media_service(dut, services)
     assert svc is not None, "no media service available — should have been skipped"
@@ -112,13 +151,12 @@ def test_ready_to_use_profile_for_video(dut: DUT, spec) -> None:
     svc, prof = _media_service(dut, services)
     if svc is None:
         pytest.skip("Neither media2 nor media v10 service is advertised")
-    sources = svc.GetVideoSources()
-    assert sources, f"GetVideoSources (media {prof}) returned nothing"
+    source_tokens = _video_source_tokens(svc, prof)
+    assert source_tokens, f"media {prof} reported no video sources"
     profiles = svc.GetProfiles()
     assert profiles, f"GetProfiles (media {prof}) returned nothing"
 
-    for src in sources:
-        src_token = src.token
+    for src_token in source_tokens:
         # Each video source must have at least one profile bound to it
         # with a usable VideoEncoder configuration.
         matched = []
@@ -558,20 +596,13 @@ def test_media2_get_video_encoder_configuration_options(dut: DUT, spec) -> None:
 def test_media2_get_stream_uri(dut: DUT, spec) -> None:
     """Media2 GetStreamUri returns a parseable ``rtsp://…`` URL.
 
-    Media2's GetStreamUri signature differs from v10 — Protocol is a
-    direct parameter (RtspUnicast / RtspMulticast / RTSP / HTTP), not
-    a nested StreamSetup struct.
+    Media2's GetStreamUri signature differs from v10 — see
+    :func:`_media2_stream_uri`.
     """
     profiles = dut.media2.GetProfiles() or []
     if not profiles:
         pytest.skip("no media2 profiles")
-    profile_token = profiles[0].token
-
-    req = dut.media2.create_type("GetStreamUri")
-    req.Protocol = "RtspUnicast"
-    req.ProfileToken = profile_token
-    resp = dut.media2.GetStreamUri(req)
-    uri = getattr(resp, "Uri", None) or ""
+    uri = _media2_stream_uri(dut, profiles[0].token)
     _assert_rtsp_uri(uri, "Media2.GetStreamUri")
 
 
@@ -591,12 +622,7 @@ def test_media2_rtsp_decodes(dut: DUT, spec) -> None:
     profiles = dut.media2.GetProfiles() or []
     if not profiles:
         pytest.skip("no media2 profiles")
-    profile_token = profiles[0].token
-
-    req = dut.media2.create_type("GetStreamUri")
-    req.Protocol = "RtspUnicast"
-    req.ProfileToken = profile_token
-    uri = dut.media2.GetStreamUri(req).Uri
+    uri = _media2_stream_uri(dut, profiles[0].token)
     assert uri, "Media2.GetStreamUri returned empty URI"
 
     # Inject creds into the URL if it doesn't carry them — same pattern

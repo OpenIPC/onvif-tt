@@ -308,6 +308,61 @@ def test_get_services_matches_get_capabilities(dut: DUT, spec) -> None:
     )
 
 
+@register("LOCAL-CLIENT-SERVICES-BINDABLE", profiles={"S", "T"},
+          mandatory=True, requires_services={"devicemgmt"},
+          tags={"local", "coverage"})
+def test_every_advertised_service_is_bindable(dut: DUT, spec) -> None:
+    """Every service the DUT advertises must be one this client can bind.
+
+    This is a check on *onvif-tt*, not on the device — but it has to fail
+    loudly, because the alternative is a silently incomplete run. Both
+    failure modes below make tests skip with "DUT does not advertise
+    services", which reads as "not applicable" and leaves the exit code
+    green while whole profiles go unverified:
+
+    * a namespace with no row in ``runtime/services.py`` — the service is
+      advertised, we just don't recognise it;
+    * a row whose WSDL is absent from the vendored schema store;
+    * an entry the DUT advertised with an empty ``XAddr`` — that one is a
+      device fault (ONVIF Core makes ``Service/XAddr`` mandatory) but it
+      fails here for the same reason: dropping it would leave the service
+      looking un-advertised.
+
+    Media2 was the first case for over a year: twelve registered tests that
+    had never once executed against a device (issue #1). ``receiver`` was
+    the second, found while fixing the first.
+    """
+    from ..runtime.features import discover_services
+
+    services = discover_services(dut)
+
+    unknown = sorted(dut.session.unknown_namespaces)
+    unbindable = sorted(s for s in services if not dut.can_bind(s))
+    no_endpoint = sorted(dut.session.advertised_without_xaddr)
+
+    problems = []
+    if unknown:
+        problems.append(
+            "namespaces with no entry in onvif_tt/runtime/services.py: "
+            + ", ".join(unknown)
+        )
+    if unbindable:
+        problems.append(
+            "services with no WSDL in the vendored schema store (run "
+            "`onvif-tt schemas refresh`): " + ", ".join(unbindable)
+        )
+    if no_endpoint:
+        problems.append(
+            "services advertised with an empty XAddr, which ONVIF Core "
+            "requires: " + ", ".join(no_endpoint)
+        )
+    assert not problems, (
+        "The DUT advertises services this client cannot reach, so any test "
+        "requiring them would skip as though the device didn't implement "
+        "them. " + "; ".join(problems)
+    )
+
+
 # ---------------------------------------------------------------------------
 # BASE — SOAP fault on invalid request (DEVICE-1-1-9)
 # ---------------------------------------------------------------------------

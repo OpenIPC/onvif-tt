@@ -23,10 +23,13 @@ TARGET="${1:?usage: verify-subscription-cleanup.sh HOST[:PORT] USER PASS}"
 USER="${2:-admin}"
 PASS="${3:-admin}"
 
+# Override for a venv that isn't on PATH: PYTHON=.venv/bin/python ./scripts/...
+PYTHON="${PYTHON:-python3}"
+
 step() { printf "\n=== %s ===\n" "$*"; }
 
 step "1. Open a PullPoint subscription via onvif-tt's runtime"
-SUB_URL=$(~/venvs/onvif-tt/bin/python - "$TARGET" "$USER" "$PASS" <<'PY'
+SUB_URL=$("$PYTHON" - "$TARGET" "$USER" "$PASS" <<'PY'
 import sys
 host_port, user, password = sys.argv[1:4]
 host, _, port = host_port.partition(":")
