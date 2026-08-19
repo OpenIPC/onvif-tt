@@ -200,6 +200,52 @@ def test_choice_members_are_not_reported_missing(finder):
     assert [v for v in out if v.code == "missing-element"] == []
 
 
+def test_foreign_namespace_cannot_impersonate_a_required_child(finder):
+    """Matching must be on the full QName, not the local name.
+
+    ONVIF responses mix namespaces by design, and extension points mean
+    vendor elements really do turn up. If presence were checked on local
+    names, a `<vendor:Name>` would satisfy the requirement for `<tt:Name>`
+    — suppressing the violation *and* then being validated against the
+    wrong declaration.
+    """
+    payload = ('<trt:GetProfilesResponse><trt:Profiles token="P0" '
+               'fixed="true"><vendor:Name xmlns:vendor="urn:vendor">x'
+               '</vendor:Name></trt:Profiles></trt:GetProfilesResponse>')
+    found = validate_body(_body(payload), finder, "GetProfiles")
+    missing = {v.path for v in found if v.code == "missing-element"}
+    assert "GetProfilesResponse/Profiles/Name" in missing, found
+
+
+def test_repeated_minimum_is_enforced(finder):
+    """A positive minOccurs is a count, not a boolean.
+
+    tt:Polyline declares Point with minOccurs="2" (and tt:Merge/from,
+    tt:Split/to likewise), so a single occurrence is non-conformant even
+    though the element is present.
+    """
+    settings = Settings(strict=False, xml_huge_tree=True)
+    client = Client(wsdl=str(schema_store.local_path(
+        services.get("media").wsdl_url)), settings=settings,
+        transport=schema_store.VendoredSchemaTransport())
+    polyline = client.get_type(f"{{{TT}}}Polyline")
+
+    def points(n):
+        node = etree.fromstring(
+            (f'<Polyline xmlns="{TT}">'
+             + '<Point x="1" y="2"/>' * n
+             + '</Polyline>').encode())
+        out = []
+        validate_element(node, polyline, "op", "Polyline", out)
+        return [v for v in out if v.code == "missing-element"]
+
+    assert points(2) == [], "two points satisfy minOccurs=2"
+    one = points(1)
+    assert len(one) == 1, one
+    assert "only 1 occurrence" in one[0].detail
+    assert len(points(0)) == 1
+
+
 def test_unknown_element_is_skipped_not_reported(finder):
     """ONVIF extension points mean undeclared children are normal."""
     payload = ('<trt:GetProfilesResponse><trt:Profiles token="P0" '

@@ -313,6 +313,10 @@ class DUT:
         )
         # Services are constructed on demand in __getattr__.
         self._services: dict[str, Any] = {}
+        # Every zeep client we've built, including the subscription-rooted
+        # bindings that never become entries in _services. The response
+        # validator resolves QNames against this.
+        self.zeep_clients: list[Any] = []
 
     # -- service accessors ----------------------------------------------------
 
@@ -334,6 +338,11 @@ class DUT:
         PullPoint's two bindings, NotifyHandle, NotificationProducer) and
         adding a plugin to three of four is a silent hole — the observer
         simply never sees those responses.
+
+        Also records the zeep client on :attr:`zeep_clients`, which is what
+        the response validator searches to resolve a response's QName. The
+        subscription-rooted bindings never land in ``_services``, so without
+        this their responses would be silently unvalidatable.
         """
         for svc in svcs:
             try:
@@ -345,6 +354,8 @@ class DUT:
             plugins.append(self._trace)
             plugins.append(self._wsa)
             plugins.append(self._schema)
+            if svc.zeep_client not in self.zeep_clients:
+                self.zeep_clients.append(svc.zeep_client)
 
     def can_reach(self, name: str) -> bool:
         """Whether a *working* proxy can be built — schema **and** endpoint.

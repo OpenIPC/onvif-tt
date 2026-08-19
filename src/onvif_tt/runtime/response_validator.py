@@ -62,6 +62,7 @@ calling test afterwards.
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from dataclasses import dataclass
 
 from lxml import etree
@@ -153,32 +154,55 @@ def enum_index() -> dict[str, list[str]]:
 # The walker
 # ---------------------------------------------------------------------------
 
-def _local(el: etree._Element) -> str:
-    return etree.QName(el).localname
-
-
 def validate_element(node, zeep_type, operation: str, path: str,
                      out: list[SchemaViolation]) -> None:
     """Check ``node`` against ``zeep_type``, recursing into declared children.
 
     Appends to ``out``; never raises. An unrecognised child is skipped rather
     than reported — ONVIF's extension points make undeclared elements normal.
+
+    Matching is on the **full QName**, not the local name. ONVIF responses mix
+    namespaces freely (the wrapper is in the service namespace, its contents in
+    ``tt:``), and matching on local names alone would let a vendor-extension
+    element impersonate a required ONVIF child — suppressing the
+    ``missing-element`` it should have raised, and then being validated against
+    the wrong declaration.
     """
     enums = enum_index()
     elements = getattr(zeep_type, "elements", None) or []
-    declared = dict(elements)
 
-    present = {_local(child) for child in node}
+    declared: dict[str, object] = {}
     for name, sub in elements:
         if name == _ANY:
             continue
-        if getattr(sub, "min_occurs", 0) and name not in present:
+        qname = str(getattr(sub, "qname", "") or "")
+        if qname:
+            declared[qname] = sub
+
+    counts = Counter(child.tag for child in node
+                     if isinstance(child.tag, str))
+    for name, sub in elements:
+        if name == _ANY:
+            continue
+        qname = str(getattr(sub, "qname", "") or "")
+        min_occurs = getattr(sub, "min_occurs", 0) or 0
+        # Without a QName we cannot tell presence from absence, so say nothing
+        # rather than risk a false alarm.
+        if not qname or not min_occurs:
+            continue
+        seen = counts.get(qname, 0)
+        if seen < min_occurs:
             out.append(SchemaViolation(
                 operation=operation,
                 code="missing-element",
                 path=f"{path}/{name}",
-                detail=(f"mandatory element (minOccurs="
-                        f"{sub.min_occurs}) is absent from the response"),
+                detail=(
+                    f"mandatory element (minOccurs={min_occurs}) is absent "
+                    f"from the response"
+                    if seen == 0 else
+                    f"declared minOccurs={min_occurs} but only {seen} "
+                    f"occurrence(s) present"
+                ),
             ))
 
     for name, attr in (getattr(zeep_type, "attributes", None) or []):
@@ -191,10 +215,12 @@ def validate_element(node, zeep_type, operation: str, path: str,
             ))
 
     for child in node:
-        name = _local(child)
-        sub = declared.get(name)
+        if not isinstance(child.tag, str):
+            continue  # comment / processing instruction
+        sub = declared.get(child.tag)
         if sub is None:
             continue
+        name = etree.QName(child).localname
         qname = str(getattr(sub.type, "qname", "") or "")
         allowed = enums.get(qname)
         text = (child.text or "").strip()
@@ -253,15 +279,15 @@ class ResponseValidator(Plugin):
         self._sink = sink
 
     def _find_element(self, qname: str):
-        """Resolve a QName against the services already bound on this DUT.
+        """Resolve a QName against every zeep client bound on this DUT.
 
-        Uses the live clients rather than building new ones: by the time a
-        response arrives, the client that issued it is necessarily bound.
+        Searches ``dut.zeep_clients``, not ``dut._services``: the
+        subscription-rooted bindings (PullPoint, SubscriptionManager,
+        NotificationProducer) are never cached as services, so a
+        ``_services``-only search silently skips every Subscribe / PullMessages
+        response — validation that looked enabled but wasn't.
         """
-        for svc in list(self._dut._services.values()):
-            client = getattr(svc, "zeep_client", None)
-            if client is None:
-                continue
+        for client in list(self._dut.zeep_clients):
             try:
                 return client.get_element(qname)
             except Exception:  # noqa: BLE001 — wrong client, try the next

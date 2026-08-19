@@ -217,4 +217,22 @@ def _validate(dut: Any, service: str, body: etree._Element) -> None:
     from .response_validator import element_finder_for_services, validate_body
 
     finder = element_finder_for_services((service, "devicemgmt"))
-    sink.extend(validate_body(body, finder, f"{service} (raw)"))
+    sink.extend(validate_body(body, finder, _operation_name(body, service)))
+
+
+def _operation_name(body: etree._Element, service: str) -> str:
+    """The ONVIF operation this response answers.
+
+    Named from the payload rather than the service, so a violation reads
+    ``GetSupportedMetadata`` — the same string a zeep-issued call would
+    report — instead of a bare ``analytics``, which cannot distinguish the
+    several raw calls that share one service.
+    """
+    for child in body:
+        if not isinstance(child.tag, str):
+            continue
+        local = etree.QName(child).localname
+        if local == "Fault":
+            continue
+        return local[:-len("Response")] if local.endswith("Response") else local
+    return service
