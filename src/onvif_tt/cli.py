@@ -247,6 +247,8 @@ def _cmd_run(args, unknown_args) -> int:
         pytest_args.append(f"--id-glob={g}")
     if args.mandatory_only:
         pytest_args.append("--mandatory-only")
+    if args.no_schema_validation:
+        pytest_args.append("--no-schema-validation")
     if args.allow_writes:
         pytest_args.append("--allow-writes")
     if args.allow_reboot:
@@ -320,6 +322,11 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="enable tests that REBOOT the DUT and wait for "
                          "recovery (separate gate beyond --allow-writes; "
                          "each test takes ~60-120 s)")
+    rp.add_argument("--no-schema-validation", action="store_true",
+                    help="don't validate responses against the ONVIF schema "
+                         "(on by default; a device that is knowingly "
+                         "non-conformant should carry an xfail_on matcher "
+                         "instead)")
     rp.add_argument("--junit-xml")
     rp.add_argument("--json-report")
     rp.add_argument("--corpus-dir")

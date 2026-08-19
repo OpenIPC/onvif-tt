@@ -111,6 +111,35 @@ def _gate_services(requires, advertised, can_reach):
     return missing, unreachable
 
 
+def _fail_on_schema_violations(dut, validate: bool) -> None:
+    """Fail the test if any response it provoked was structurally invalid.
+
+    Deliberately after the body rather than in-band: raising from inside the
+    zeep ingress hook would abort the SOAP call itself, which reads as a
+    transport error and can strand a subscription mid-teardown.
+
+    A test that ran on a response missing a mandatory element cannot claim a
+    pass — that is the whole point of issue #3. When many tests share one
+    device defect the reporter groups them, so the run reads as N defects
+    rather than N failures.
+    """
+    if not validate:
+        return
+    violations = dut.session.schema_violations
+    if not violations:
+        return
+    lines = "\n".join(
+        f"  [{v.code}] {v.path}\n      {v.detail}"
+        for v in violations
+    )
+    pytest.fail(
+        f"{len(violations)} schema violation(s) in responses this test "
+        f"received. The assertions may have passed, but they ran on data "
+        f"the ONVIF schema does not permit:\n{lines}",
+        pytrace=False,
+    )
+
+
 @pytest.mark.parametrize("test_id", _all_ids() or ["__no_tests_registered__"])
 def test_onvif_case(test_id, dut, _services, _device_info, spec, request):
     if test_id == "__no_tests_registered__":
@@ -169,12 +198,24 @@ def test_onvif_case(test_id, dut, _services, _device_info, spec, request):
     if "request" in sig.parameters:
         kwargs["request"] = request
 
-    if xfail_reason is None:
+    validate = not request.config.getoption("--no-schema-validation")
+    dut._schema.enabled = validate
+    # Clear immediately before the body, not after the test: session-scoped
+    # fixtures (discover_services' GetServices/GetCapabilities) issue calls
+    # of their own, and those responses must not be blamed on whichever test
+    # happened to run first.
+    dut.session.schema_violations.clear()
+
+    def _run_body():
         impl.func(**kwargs)
+        _fail_on_schema_violations(dut, validate)
+
+    if xfail_reason is None:
+        _run_body()
         return
 
     try:
-        impl.func(**kwargs)
+        _run_body()
     except BaseException as exc:  # noqa: BLE001
         # Pytest's outcome exceptions (pytest.fail / pytest.skip) inherit
         # from BaseException, not Exception — so a plain `except Exception`

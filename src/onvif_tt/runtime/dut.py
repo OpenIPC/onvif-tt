@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import services as service_table
+from .response_validator import ResponseValidator, SchemaViolation
 from .schema_store import VendoredSchemaTransport, local_path
 from .soap_trace import SoapTrace
 from .wsa_validator import WSAValidator, WSAViolation
@@ -92,6 +93,10 @@ class DUTSession:
     )
     subscriptions: list[Any] = field(default_factory=list)
     wsa_violations: list[WSAViolation] = field(default_factory=list)
+    schema_violations: list[SchemaViolation] = field(default_factory=list)
+    """Structural schema defects seen in responses during the current test.
+    Cleared by the dispatch loop immediately before each test body, so a
+    violation is attributed to the test whose call provoked it."""
 
 
 # ---------------------------------------------------------------------------
@@ -137,14 +142,7 @@ class PullPointHandle:
             binding_name=service_table.event_binding_name(
                 "subscription_manager"),
         )
-        # Attach SOAP trace + WS-Addressing validator plugins to both.
-        for svc in (self._pull, self._mgr):
-            try:
-                svc.zeep_client.plugins.append(dut._trace)
-                svc.zeep_client.plugins.append(dut._wsa)
-            except AttributeError:
-                pass
-
+        dut.attach_plugins(self._pull, self._mgr)
         dut.session.subscriptions.append(self)
 
     # ------------------------------------------------------------------ ops
@@ -221,11 +219,7 @@ class NotifyHandle:
             binding_name=service_table.event_binding_name(
                 "subscription_manager"),
         )
-        try:
-            self._mgr.zeep_client.plugins.append(dut._trace)
-            self._mgr.zeep_client.plugins.append(dut._wsa)
-        except AttributeError:
-            pass
+        dut.attach_plugins(self._mgr)
         dut.session.subscriptions.append(self)
 
     def renew(self, termination_time: str = "PT60S") -> Any:
@@ -301,6 +295,8 @@ class DUT:
         self._trace = SoapTrace(self.session.soap_traces)
         self._wsa = WSAValidator()
         self._wsa.attach(self.session.wsa_violations)
+        self._schema = ResponseValidator(self)
+        self._schema.attach(self.session.schema_violations)
         # One transport, shared by every service: it resolves WSDL/XSD
         # imports from the vendored store and carries the SOAP requests.
         # operation_timeout is deliberately left unset — PullMessages
@@ -317,6 +313,10 @@ class DUT:
         )
         # Services are constructed on demand in __getattr__.
         self._services: dict[str, Any] = {}
+        # Every zeep client we've built, including the subscription-rooted
+        # bindings that never become entries in _services. The response
+        # validator resolves QNames against this.
+        self.zeep_clients: list[Any] = []
 
     # -- service accessors ----------------------------------------------------
 
@@ -330,6 +330,32 @@ class DUT:
         """
         svc = service_table.get(name)
         return svc is not None and local_path(svc.wsdl_url) is not None
+
+    def attach_plugins(self, *svcs: Any) -> None:
+        """Attach every observing plugin to freshly-built ONVIFServices.
+
+        One place, because there are four construction sites (services,
+        PullPoint's two bindings, NotifyHandle, NotificationProducer) and
+        adding a plugin to three of four is a silent hole — the observer
+        simply never sees those responses.
+
+        Also records the zeep client on :attr:`zeep_clients`, which is what
+        the response validator searches to resolve a response's QName. The
+        subscription-rooted bindings never land in ``_services``, so without
+        this their responses would be silently unvalidatable.
+        """
+        for svc in svcs:
+            try:
+                plugins = svc.zeep_client.plugins
+            except AttributeError:
+                # Older onvif-zeep — plugin list may live elsewhere.
+                log.debug("Could not attach plugins to %r", svc)
+                continue
+            plugins.append(self._trace)
+            plugins.append(self._wsa)
+            plugins.append(self._schema)
+            if svc.zeep_client not in self.zeep_clients:
+                self.zeep_clients.append(svc.zeep_client)
 
     def can_reach(self, name: str) -> bool:
         """Whether a *working* proxy can be built — schema **and** endpoint.
@@ -416,14 +442,11 @@ class DUT:
                 **self._service_kwargs(name),
                 binding_name=sd.binding_name,
             )
-            # Inject trace + WS-Addressing validator plugins.
-            try:
-                svc.zeep_client.plugins.append(self._trace)
-                svc.zeep_client.plugins.append(self._wsa)
-            except AttributeError:
-                # Older onvif-zeep — plugin list may live elsewhere.
-                log.debug("Could not attach plugins to %s", name)
+            # Cache before attaching: the response validator resolves QNames
+            # against the bound clients, and this one must be reachable by
+            # the time its own first response comes back.
             self._services[name] = svc
+            self.attach_plugins(svc)
         return svc
 
     # -- helpers --------------------------------------------------------------
@@ -477,11 +500,7 @@ class DUT:
             binding_name=service_table.event_binding_name(
                 "notification_producer"),
         )
-        try:
-            np.zeep_client.plugins.append(self._trace)
-            np.zeep_client.plugins.append(self._wsa)
-        except AttributeError:
-            pass
+        self.attach_plugins(np)
         resp = np.Subscribe({
             "ConsumerReference": {"Address": {"_value_1": consumer_reference}},
             "InitialTerminationTime": initial_termination,
