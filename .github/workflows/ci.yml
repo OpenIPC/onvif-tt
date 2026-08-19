@@ -34,6 +34,31 @@ jobs:
       - name: Run unit tests
         run: pytest tests/ -v
 
+      - name: Vendored schema set is intact
+        # Byte-identical to onvif.org: ONVIF permits redistribution but not
+        # modification, and every zeep client is built from these files.
+        run: onvif-tt schemas verify
+
+      - name: Vendored schema set survives packaging
+        # `pip install -e .` can't catch package-data globs that miss, and a
+        # wheel without the schemas installs fine and then binds nothing.
+        shell: python
+        run: |
+          import glob, subprocess, zipfile
+          subprocess.run(["pip", "wheel", "--no-deps", "-w", "/tmp/wh", "."],
+                         check=True)
+          names = set(zipfile.ZipFile(glob.glob("/tmp/wh/onvif_tt-*.whl")[0]).namelist())
+          want = [
+              "onvif_tt/schemas/MANIFEST.json",
+              "onvif_tt/schemas/www.onvif.org/ver20/media/wsdl/media.wsdl",
+              "onvif_tt/schemas/www.onvif.org/ver10/schema/onvif.xsd",
+              # No file extension — the reason the glob is a bare `**/*`.
+              "onvif_tt/schemas/www.w3.org/2005/05/xmlmime",
+          ]
+          missing = [n for n in want if n not in names]
+          assert not missing, f"wheel is missing schema files: {missing}"
+          print(f"wheel ships {sum('/schemas/' in n for n in names)} schema files")
+
       - name: Catalog sanity
         shell: python
         run: |
@@ -114,6 +139,10 @@ jobs:
             --id-glob 'DEVICE-1-1-13' \
             --id-glob 'DEVICE-3-1-9'  \
             --id-glob 'EVENT-1-1-2'   \
+            --id-glob 'MEDIA2-2-2-2'  \
+            --id-glob 'MEDIA2-2-3-1'  \
+            --id-glob 'LOCAL-MEDIA2-STREAM-URI'    \
+            --id-glob 'LOCAL-CLIENT-SERVICES-BINDABLE' \
             --junit-xml junit.xml \
             --json-report results.json
           python -c 'import json; d=json.load(open("results.json")); print("SUMMARY:", d["summary"])'

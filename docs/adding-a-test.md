@@ -69,7 +69,7 @@ def test_get_services_device(dut: DUT, spec) -> None:
 |---|---|
 | `profiles={"S","T"}` | Filter set for `--profile` |
 | `mandatory=True/False` | Match the spec's "must"/"shall" vs "may" |
-| `requires_services={"media2"}` | Skip if DUT doesn't advertise it (via `GetServices`) |
+| `requires_services={"media2"}` | Skip if DUT doesn't advertise it (via `GetServices`). Every name must have a `ServiceDef` in `runtime/services.py` — if the DUT *does* advertise it and we can't bind it, the test **fails** rather than skips |
 | `requires_writes=True` | Skip unless `--allow-writes` (motors, reboot, config change) |
 | `xfail_on=[{"Manufacturer": "H264", "reason": "..."}]` | Mark as expected-failure on a fingerprinted device |
 | `tags={"local", "network"}` | Free-form labels |
