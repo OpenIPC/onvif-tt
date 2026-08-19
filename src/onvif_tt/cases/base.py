@@ -322,7 +322,11 @@ def test_every_advertised_service_is_bindable(dut: DUT, spec) -> None:
 
     * a namespace with no row in ``runtime/services.py`` — the service is
       advertised, we just don't recognise it;
-    * a row whose WSDL is absent from the vendored schema store.
+    * a row whose WSDL is absent from the vendored schema store;
+    * an entry the DUT advertised with an empty ``XAddr`` — that one is a
+      device fault (ONVIF Core makes ``Service/XAddr`` mandatory) but it
+      fails here for the same reason: dropping it would leave the service
+      looking un-advertised.
 
     Media2 was the first case for over a year: twelve registered tests that
     had never once executed against a device (issue #1). ``receiver`` was
@@ -334,6 +338,7 @@ def test_every_advertised_service_is_bindable(dut: DUT, spec) -> None:
 
     unknown = sorted(dut.session.unknown_namespaces)
     unbindable = sorted(s for s in services if not dut.can_bind(s))
+    no_endpoint = sorted(dut.session.advertised_without_xaddr)
 
     problems = []
     if unknown:
@@ -345,6 +350,11 @@ def test_every_advertised_service_is_bindable(dut: DUT, spec) -> None:
         problems.append(
             "services with no WSDL in the vendored schema store (run "
             "`onvif-tt schemas refresh`): " + ", ".join(unbindable)
+        )
+    if no_endpoint:
+        problems.append(
+            "services advertised with an empty XAddr, which ONVIF Core "
+            "requires: " + ", ".join(no_endpoint)
         )
     assert not problems, (
         "The DUT advertises services this client cannot reach, so any test "

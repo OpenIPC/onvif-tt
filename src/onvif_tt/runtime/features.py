@@ -69,6 +69,12 @@ def discover_services(dut: DUT) -> dict[str, str]:
             continue
         if s.XAddr:
             dut.session.services[sd.short] = s.XAddr
+        else:
+            # Advertised with no endpoint. Silently dropping it would make
+            # the service indistinguishable from one the DUT doesn't
+            # implement, and its tests would skip as "not applicable" —
+            # the exact silent-green failure this module is guarding.
+            dut.session.advertised_without_xaddr.add(sd.short)
 
     try:
         caps = dut.devicemgmt.GetCapabilities("All")
@@ -81,6 +87,9 @@ def discover_services(dut: DUT) -> dict[str, str]:
             xaddr = getattr(sec, "XAddr", None) if sec is not None else None
             if xaddr and short not in dut.session.services:
                 dut.session.services[short] = xaddr
+                # The legacy envelope supplied an endpoint GetServices left
+                # blank, so the service is reachable after all.
+                dut.session.advertised_without_xaddr.discard(short)
 
     return dut.session.services
 

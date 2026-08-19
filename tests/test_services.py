@@ -76,19 +76,19 @@ def test_gate_skips_only_what_the_dut_lacks():
     assert unbindable == set()
 
 
-def test_gate_flags_advertised_but_unbindable():
+def test_gate_flags_advertised_but_unreachable():
     """The issue-#1 shape: the DUT has it, we can't reach it.
 
-    Must land in ``unbindable`` (which dispatch turns into a failure), not
+    Must land in ``unreachable`` (which dispatch turns into a failure), not
     in ``missing`` (which it skips).
     """
-    missing, unbindable = _gate_services(
+    missing, unreachable = _gate_services(
         {"devicemgmt", "media2"},
         {"devicemgmt", "media2"},
         lambda s: s != "media2",
     )
     assert missing == set()
-    assert unbindable == {"media2"}
+    assert unreachable == {"media2"}
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +102,9 @@ class _FakeService:
 
 
 class _FakeDeviceMgmt:
+    def __init__(self, caps=None) -> None:
+        self._caps = caps
+
     def GetServices(self, _include_capability):
         return [
             _FakeService("http://www.onvif.org/ver10/device/wsdl",
@@ -110,10 +113,12 @@ class _FakeDeviceMgmt:
                          "http://cam/onvif/media2_service"),
             _FakeService("http://vendor.example.com/private/wsdl",
                          "http://cam/onvif/private_service"),
+            # Advertised, but with no endpoint to send anything to.
+            _FakeService("http://www.onvif.org/ver20/ptz/wsdl", ""),
         ]
 
     def GetCapabilities(self, _category):
-        return None
+        return self._caps
 
 
 class _FakeConfig:
@@ -121,10 +126,10 @@ class _FakeConfig:
 
 
 class _FakeDUT:
-    def __init__(self) -> None:
+    def __init__(self, caps=None) -> None:
         self.session = DUTSession()
         self.config = _FakeConfig()
-        self.devicemgmt = _FakeDeviceMgmt()
+        self.devicemgmt = _FakeDeviceMgmt(caps)
 
 
 def test_discovery_maps_known_namespaces():
@@ -147,3 +152,51 @@ def test_discovery_quarantines_unknown_namespaces():
     assert dut.session.unknown_namespaces == {
         "http://vendor.example.com/private/wsdl"
     }
+
+
+def test_discovery_flags_advertised_service_with_no_xaddr():
+    """An empty XAddr must not read as "the DUT doesn't have it".
+
+    ONVIF Core makes ``Service/XAddr`` mandatory, so this is a device fault
+    — but the reason it's tracked is that dropping the entry would make the
+    service look un-advertised, and its tests would skip as "not
+    applicable". Same silent-green shape as the Media2 gap itself.
+    """
+    dut = _FakeDUT()
+    found = discover_services(dut)
+    assert "ptz" not in found, "a service with no endpoint is not usable"
+    assert dut.session.advertised_without_xaddr == {"ptz"}
+
+
+def test_service_with_no_xaddr_is_unreachable_not_missing():
+    """It has to reach dispatch as unreachable (fail), not missing (skip)."""
+    dut = _FakeDUT()
+    services = discover_services(dut)
+    advertised = set(services) | dut.session.advertised_without_xaddr
+
+    def can_reach(name):
+        return name not in dut.session.advertised_without_xaddr
+
+    missing, unreachable = _gate_services({"ptz"}, advertised, can_reach)
+    assert missing == set()
+    assert unreachable == {"ptz"}
+
+
+def test_getcapabilities_fallback_clears_the_no_xaddr_flag():
+    """Legacy envelope supplying the endpoint makes the service usable.
+
+    Some firmwares list a service in GetServices without an XAddr but do
+    give one in GetCapabilities. That's still a GetServices violation
+    (flagged by LOCAL-SERVICES-CAPABILITIES-CONSISTENT), but the service is
+    reachable, so its tests must run rather than fail.
+    """
+    class _Section:
+        XAddr = "http://cam/onvif/ptz_service"
+
+    class _Caps:
+        PTZ = _Section()
+
+    dut = _FakeDUT(caps=_Caps())
+    found = discover_services(dut)
+    assert found["ptz"] == "http://cam/onvif/ptz_service"
+    assert dut.session.advertised_without_xaddr == set()

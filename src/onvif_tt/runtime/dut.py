@@ -71,6 +71,13 @@ class DUTSession:
     """
 
     services: dict[str, str] = field(default_factory=dict)  # name → xaddr
+    advertised_without_xaddr: set[str] = field(default_factory=set)
+    """Services the DUT listed in ``GetServices`` with an empty or absent
+    ``XAddr``. That's a spec violation on its own — ONVIF Core makes
+    ``Service/XAddr`` mandatory — but the reason it's tracked separately is
+    the same one as ``unknown_namespaces``: dropping the entry silently
+    would leave the service looking un-advertised, so its tests would skip
+    as "not applicable" and the run would stay green."""
     unknown_namespaces: set[str] = field(default_factory=set)
     """Service namespaces the DUT advertised that :mod:`.services` has no
     row for. Kept out of ``services`` on purpose: filing them there under
@@ -323,6 +330,19 @@ class DUT:
         """
         svc = service_table.get(name)
         return svc is not None and local_path(svc.wsdl_url) is not None
+
+    def can_reach(self, name: str) -> bool:
+        """Whether a *working* proxy can be built — schema **and** endpoint.
+
+        :meth:`can_bind` answers "do we have the schema", which is about this
+        client. This adds "did the device give us somewhere to send the
+        request", which is about the DUT: a service advertised in
+        ``GetServices`` with an empty ``XAddr`` is unusable no matter how
+        good our schema set is, and must not be mistaken for absent.
+        """
+        return self.can_bind(name) and name not in (
+            self.session.advertised_without_xaddr
+        )
 
     def _service_kwargs(self, name: str) -> dict[str, Any]:
         """Constructor arguments shared by every ``ONVIFService`` we build.
