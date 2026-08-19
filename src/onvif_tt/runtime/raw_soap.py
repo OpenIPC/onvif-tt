@@ -68,15 +68,19 @@ def _excerpt(resp_bytes: bytes, line: int, col: int, ctx: int = 60) -> str:
 def _sign_envelope(envelope_bytes: bytes, dut: Any) -> bytes:
     """Apply a WS-Security UsernameToken to an envelope.
 
-    Delegates to python-onvif-zeep's ``UsernameDigestTokenDtDiff`` so
-    we inherit:
+    Delegates to python-onvif-zeep's ``UsernameDigestTokenDtDiff`` so we
+    produce byte-identical tokens to every other operation on this DUT —
+    same PasswordText / PasswordDigest selection (``use_digest`` =
+    ``cam.encrypt``), same ``Created`` handling.
 
-    * its clock-skew correction (``dt_diff``, populated from
-      ``GetSystemDateAndTime`` — reinventing the digest by hand fails
-      on devices whose clock doesn't match the host's), and
-    * the same PasswordText / PasswordDigest selection (``use_digest``
-      = ``cam.encrypt``) that every other operation on this DUT
-      already uses successfully.
+    Note ``cam.dt_diff`` is always ``None``: the library only derives it
+    when constructed with ``adjust_time=True``, which we don't pass, so
+    the token's clock-skew shift is a no-op and ``Created`` comes from the
+    host clock. A DUT whose clock is off will reject this — and equally
+    every zeep-issued request — with ``wsse:FailedAuthentication``. That's
+    a real gap, tracked in issue #5; it is deliberately not papered over
+    here, because raw SOAP must stay symmetric with what zeep sends or it
+    stops being a faithful stand-in for the operations it substitutes.
 
     Forcing ``use_digest=True`` on a device that was set up with
     ``encrypt=False`` will be rejected as ``wsse:FailedAuthentication``
