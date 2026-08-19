@@ -347,6 +347,7 @@ class DUT:
         # validator resolves QNames against this.
         self.zeep_clients: list[Any] = []
         self._negotiating = False
+        self._clock_checked = False
 
     # -- authentication -------------------------------------------------------
 
@@ -379,6 +380,11 @@ class DUT:
             if label not in self.session.auth.rejected:
                 self.session.auth.rejected.append(label)
             return False
+        # A mode that works on a retry was never really refused; leaving it
+        # in `rejected` would have SECURITY-1-1-1 report a digest-capable
+        # device as digest-refusing.
+        if label in self.session.auth.rejected:
+            self.session.auth.rejected.remove(label)
         self.session.auth.accepted = label
         return True
 
@@ -392,7 +398,15 @@ class DUT:
             for label, use_digest in self._auth_candidates:
                 if self._try_auth(label, use_digest):
                     return
-            self._retry_with_clock_offset()
+                # Retry *this* candidate with the clock corrected before
+                # falling back to a weaker one. Doing the skew check only
+                # after every candidate had failed meant a digest-capable
+                # device with a wrong clock silently ended up on cleartext,
+                # recorded as having refused digest — a false verdict, and
+                # the password on the wire for no reason.
+                if (self._apply_clock_offset()
+                        and self._try_auth(label, use_digest)):
+                    return
         finally:
             self._negotiating = False
 
@@ -414,8 +428,8 @@ class DUT:
             ("response", resp.content.decode("utf-8", errors="replace")))
         return device_utc_from_response(resp.content)
 
-    def _retry_with_clock_offset(self) -> None:
-        """Every password type was refused — is the device's clock the reason?
+    def _apply_clock_offset(self) -> bool:
+        """A password type was refused — is the device's clock the reason?
 
         A ``PasswordDigest`` is computed over the ``Created`` timestamp we
         send, and devices that enforce a freshness window on it will reject an
@@ -425,33 +439,35 @@ class DUT:
         refused. Retried once, only when the measured offset is big enough to
         plausibly be the cause, so a genuinely wrong password still fails
         fast and honestly. Issue #5.
+
+        Returns True if an offset worth retrying for was found and applied.
+        Probes at most once per session — a device whose clock we've already
+        measured won't tell us anything new on the next refusal.
         """
+        if self._clock_checked:
+            return False
+        self._clock_checked = True
         try:
             device_utc = self._probe_device_time()
         except Exception as exc:  # noqa: BLE001
             log.debug("clock probe failed, leaving auth as refused: %s", exc)
-            return
+            return False
         if device_utc is None:
             self.session.auth.clock_probe_refused = True
             log.warning(
                 "DUT would not answer an unauthenticated GetSystemDateAndTime, "
                 "so clock skew cannot be ruled out as the cause of the "
                 "authentication failure")
-            return
+            return False
         offset = device_utc - datetime.datetime.utcnow()
         self.session.auth.clock_offset = offset
         if abs(offset) <= _CLOCK_SKEW_TOLERANCE:
-            return  # clocks agree; the credentials really are being refused
+            return False  # clocks agree; the credentials are genuinely refused
         log.warning(
             "DUT clock differs from host by %s — retrying authentication with "
             "the offset applied to wsu:Created", offset)
         self._camera.dt_diff = offset
-        for label, use_digest in self._auth_candidates:
-            if self._try_auth(label, use_digest):
-                log.warning("authenticated as %s after correcting for clock "
-                            "skew of %s", label, offset)
-                return
-        self._camera.dt_diff = None  # skew wasn't it; don't distort later calls
+        return True
 
     # -- service accessors ----------------------------------------------------
 
@@ -489,6 +505,13 @@ class DUT:
             plugins.append(self._trace)
             plugins.append(self._wsa)
             plugins.append(self._schema)
+            # --auth none means *no* wsse:Security header. Clearing the
+            # credentials isn't enough: python-onvif-zeep still builds a
+            # UsernameToken, and an empty token is still a token that a
+            # device will refuse — the same trap the pre-auth clock probe
+            # hits. zeep only applies wsse when client.wsse is truthy.
+            if self.config.auth is AuthMode.NONE:
+                svc.zeep_client.wsse = None
             if svc.zeep_client not in self.zeep_clients:
                 self.zeep_clients.append(svc.zeep_client)
 

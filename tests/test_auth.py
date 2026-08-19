@@ -138,3 +138,67 @@ def test_offset_sign_matches_the_token_correction():
     assert ahead - host == dt.timedelta(minutes=5)
     behind = device_utc_from_response(_time_response(hour=11, minute=55))
     assert behind - host == dt.timedelta(minutes=-5)
+
+
+# ---------------------------------------------------------------------------
+# Regressions from the #7 review
+# ---------------------------------------------------------------------------
+
+def test_a_mode_that_works_on_retry_is_not_left_marked_rejected():
+    """Clock-skew recovery must clear the earlier refusal.
+
+    Otherwise a digest-capable device with a wrong clock authenticates as
+    PasswordDigest while still listed as having rejected it, and
+    SECURITY-1-1-1 reports a device that is fine as non-conformant.
+    """
+    state = AuthState(rejected=["PasswordDigest"])
+    # What DUT._try_auth does on a successful retry.
+    state.rejected.remove("PasswordDigest")
+    state.accepted = "PasswordDigest"
+    assert state.used_digest
+    assert not state.fell_back_to_text
+    assert state.rejected == []
+
+
+def test_username_token_escapes_credentials():
+    """A password containing XML metacharacters must not break the probe.
+
+    An unescaped '&' produces a malformed request, which the device rejects
+    for being malformed — and SECURITY-1-1-1 would report that as the device
+    refusing valid credentials.
+    """
+    from onvif_tt.cases.auth import _username_token
+
+    token = _username_token("ad&min", "p<ss>&word", digest=False,
+                            nonce=True, created=True)
+    assert "ad&amp;min" in token
+    assert "p&lt;ss&gt;&amp;word" in token
+    assert "&min" not in token.replace("&amp;min", "")
+    # Must still be parseable as XML — the whole point.
+    from lxml import etree
+    etree.fromstring(
+        f'<r xmlns:wsse="{_WSSE_NS}" xmlns:wsu="{_WSU_NS}">{token}</r>'.encode())
+
+
+def test_username_token_applies_the_clock_offset():
+    """The 'correctly formed' probe must be stamped on the device's clock."""
+    import re
+    from datetime import timedelta
+
+    from onvif_tt.cases.auth import _username_token
+
+    def stamp_of(offset):
+        token = _username_token("u", "p", digest=True, nonce=True,
+                                created=True, clock_offset=offset)
+        return re.search(r"<wsu:Created[^>]*>([^<]+)<", token).group(1)
+
+    base = dt.datetime.strptime(stamp_of(None), "%Y-%m-%dT%H:%M:%SZ")
+    shifted = dt.datetime.strptime(stamp_of(timedelta(hours=2)),
+                                   "%Y-%m-%dT%H:%M:%SZ")
+    assert timedelta(minutes=118) < shifted - base < timedelta(minutes=122)
+
+
+_WSSE_NS = ("http://docs.oasis-open.org/wss/2004/01/"
+            "oasis-200401-wss-wssecurity-secext-1.0.xsd")
+_WSU_NS = ("http://docs.oasis-open.org/wss/2004/01/"
+           "oasis-200401-wss-wssecurity-utility-1.0.xsd")

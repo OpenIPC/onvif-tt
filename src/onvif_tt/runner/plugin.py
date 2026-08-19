@@ -133,15 +133,9 @@ _results: list[dict[str, Any]] = []
 _auth_state: dict[str, Any] | None = None
 
 
-def record_auth_state(auth) -> None:
-    """Called once by the dut fixture, after negotiation has settled.
-
-    Run-level rather than per-test: which password type the device accepted
-    is a property of the session, and repeating it on 146 results would say
-    nothing extra.
-    """
-    global _auth_state
-    _auth_state = {
+def auth_summary(auth) -> dict[str, Any]:
+    """Serialise the negotiated auth state for the report."""
+    return {
         "requested": auth.requested.value,
         "accepted": auth.accepted,
         "rejected": list(auth.rejected),
@@ -149,6 +143,18 @@ def record_auth_state(auth) -> None:
                            if auth.clock_offset is not None else None),
         "clock_probe_refused": auth.clock_probe_refused,
     }
+
+
+def pytest_sessionstart(session):
+    """Reset module state.
+
+    ``onvif-tt run`` calls ``pytest.main()`` in-process, so these globals
+    outlive a run. Without this, a second invocation appends to the first
+    one's results and can inherit the previous target's auth verdict.
+    """
+    _results.clear()
+    global _auth_state
+    _auth_state = None
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -197,6 +203,13 @@ def _stash_dut_state(item) -> None:
         # wsa_violations these are NOT cleared here — dispatch clears them
         # immediately before each test body, so that fixture-time traffic
         # isn't attributed to whichever test ran first.
+        # Auth is a session-level fact, but it has to ride the per-test
+        # channel: under xdist the DUT fixture lives in the worker and only
+        # report attributes cross back to the controller that writes the
+        # JSON. Same reason the envelopes travel this way.
+        item.user_properties.append(
+            ("onvif_tt_auth", auth_summary(dut.session.auth)))
+
         item.user_properties.append(("onvif_tt_schema_violations", [
             {"operation": v.operation, "code": v.code,
              "path": v.path, "detail": v.detail}
@@ -259,6 +272,11 @@ def pytest_runtest_logreport(report):
         sv = props["onvif_tt_schema_violations"] or []
         if sv:
             rec["schema_violations"] = sv
+    if props.get("onvif_tt_auth"):
+        # Last writer wins: negotiation settles once and then never changes,
+        # so any test's copy is the session's verdict.
+        global _auth_state
+        _auth_state = props["onvif_tt_auth"]
 
     _results.append(rec)
 

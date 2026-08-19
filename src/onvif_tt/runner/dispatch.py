@@ -54,10 +54,6 @@ def dut(request):
         pytest.skip(f"cannot construct DUT for {target}: {exc}")
         return  # unreachable but appeases type checkers
     yield d
-    # Auth is negotiated lazily on first service access, so read it at
-    # teardown when it has actually settled.
-    from .plugin import record_auth_state
-    record_auth_state(d.session.auth)
     # Belt-and-braces: any subscription a crashing test left behind gets
     # unsubscribed here so we don't pile up state on the device.
     d.teardown_subscriptions()

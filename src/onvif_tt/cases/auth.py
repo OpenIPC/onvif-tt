@@ -140,7 +140,8 @@ _TDS = "http://www.onvif.org/ver10/device/wsdl"
 
 
 def _username_token(user: str, password: str, *, digest: bool,
-                    nonce: bool, created: bool) -> str:
+                    nonce: bool, created: bool,
+                    clock_offset=None) -> str:
     """Build one UsernameToken variant, well-formed but selectively incomplete.
 
     The digest is computed over exactly the parts present, per the
@@ -152,12 +153,20 @@ def _username_token(user: str, password: str, *, digest: bool,
     import base64
     import hashlib
     import os
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
+    from xml.sax.saxutils import escape
 
     raw_nonce = os.urandom(16)
-    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Stamp on the *device's* clock where we know it differs from ours,
+    # otherwise a DUT that only authenticated after skew correction would
+    # reject this probe and be reported as refusing a valid digest token.
+    now = datetime.now(timezone.utc) + (clock_offset or timedelta())
+    stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     parts = [
-        f'<wsse:Username>{user}</wsse:Username>',
+        # Credentials are interpolated into XML text, so a password
+        # containing & or < would otherwise produce a malformed request and
+        # a bogus conformance verdict.
+        f'<wsse:Username>{escape(user)}</wsse:Username>',
     ]
     if digest:
         material = (raw_nonce if nonce else b"") \
@@ -166,7 +175,7 @@ def _username_token(user: str, password: str, *, digest: bool,
         parts.append(f'<wsse:Password Type="{_PW_DIGEST}">{secret}'
                      f'</wsse:Password>')
     else:
-        parts.append(f'<wsse:Password Type="{_PW_TEXT}">{password}'
+        parts.append(f'<wsse:Password Type="{_PW_TEXT}">{escape(password)}'
                      f'</wsse:Password>')
     if nonce:
         parts.append(
@@ -182,6 +191,13 @@ def _accepts_token(dut: DUT, security_header: str) -> bool:
 
     Hand-rolled rather than routed through zeep, because the whole point is
     to send tokens zeep would refuse to build.
+
+    "Accepted" means HTTP 200 *and* an actual ``GetDeviceInformationResponse``
+    in the device namespace. Treating "parsed, and no SOAP 1.2 Fault" as
+    acceptance would count an HTTP error page, an unrelated payload, or a
+    SOAP 1.1 fault as a successful authentication — and every such
+    false positive here becomes a fabricated conformance verdict about the
+    device's security.
     """
     from lxml import etree
 
@@ -200,11 +216,13 @@ def _accepts_token(dut: DUT, security_header: str) -> bool:
         headers={"Content-Type": "application/soap+xml; charset=utf-8"},
         timeout=dut.config.timeout,
     )
+    if resp.status_code != 200:
+        return False
     try:
         root = etree.fromstring(resp.content)
     except etree.XMLSyntaxError:
         return False
-    return root.find(f".//{{{_SOAP12}}}Fault") is None
+    return root.find(f".//{{{_TDS}}}GetDeviceInformationResponse") is not None
 
 
 @register("SECURITY-1-1-1", profiles={"S", "T"}, mandatory=True,
@@ -230,6 +248,12 @@ def test_user_token_profile(dut: DUT, spec) -> None:
         pytest.skip("--auth none: message-level security is not under test")
 
     user, password = dut.config.user, dut.config.password
+    # If negotiation had to correct for a skewed device clock, these probes
+    # must carry the same correction or the "correctly formed token" case
+    # would be rejected for the clock rather than the token.
+    skew = dut.session.auth.clock_offset
+    if skew is not None and abs(skew.total_seconds()) <= 5:
+        skew = None
 
     # If the device serves privileged data to anyone, none of the token
     # variants below mean anything. That's a real defect, but it belongs to
@@ -245,20 +269,24 @@ def test_user_token_profile(dut: DUT, spec) -> None:
     failures: list[str] = []
 
     if _accepts_token(dut, _username_token(user, password, digest=True,
-                                           nonce=False, created=True)):
+                                           nonce=False, created=True,
+                                           clock_offset=skew)):
         failures.append("accepted a UsernameToken with no Nonce")
     if _accepts_token(dut, _username_token(user, password, digest=True,
-                                           nonce=True, created=False)):
+                                           nonce=True, created=False,
+                                           clock_offset=skew)):
         failures.append("accepted a UsernameToken with no Created timestamp")
     if _accepts_token(dut, _username_token(user, password, digest=False,
-                                           nonce=True, created=True)):
+                                           nonce=True, created=True,
+                                           clock_offset=skew)):
         failures.append(
             "accepted a UsernameToken with password type PasswordText — the "
             "password crosses the wire in cleartext, and ONVIF requires "
             "PasswordDigest"
         )
     if not _accepts_token(dut, _username_token(user, password, digest=True,
-                                               nonce=True, created=True)):
+                                               nonce=True, created=True,
+                                               clock_offset=skew)):
         failures.append(
             "rejected a correctly formed UsernameToken (PasswordDigest with "
             "Nonce and Created) — the DUT does not support the User Token "
