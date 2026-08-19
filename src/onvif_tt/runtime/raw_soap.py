@@ -149,12 +149,11 @@ def raw_soap_call(dut: Any, service: str, body_xml: bytes,
     content_type = "application/soap+xml; charset=utf-8"
     if action:
         content_type += f'; action="{action}"'
-    # python-onvif-zeep builds its zeep transport lazily per service
-    # (``dut._camera.transport`` is None), so there's no shared
-    # ``requests.Session`` to reuse. Direct POST is fine for these
-    # one-off raw calls; the rest of the test session goes through
-    # zeep's own transports.
-    resp = requests.post(
+    # Reuse the DUT's shared zeep transport session so these raw calls get
+    # the same connection pool, TLS config and timeouts as everything else.
+    # Falls back to a bare requests.post for DUT stand-ins in unit tests.
+    session = getattr(getattr(dut, "_transport", None), "session", requests)
+    resp = session.post(
         xaddr,
         data=envelope,
         headers={"Content-Type": content_type},

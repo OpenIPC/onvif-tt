@@ -9,6 +9,16 @@ Thin layer over ``python-onvif-zeep``'s ``ONVIFCamera`` that:
   request/response per service for failure reporting;
 * caches the result of ``GetServices`` so feature-gating queries cost
   nothing after the first call.
+
+Services are constructed here rather than through ``ONVIFCamera``'s
+``create_*_service`` factories. Those read ``onvif.definition.SERVICES``,
+which has no Media2 entry, and take their XAddrs from ver10
+``GetCapabilities``, whose ``tt:Capabilities`` has no Media2 slot — so
+Media2 was unreachable by construction. We instead build each
+``ONVIFService`` against a WSDL from the vendored schema store
+(:mod:`.schema_store`) at the XAddr the device reported in ``GetServices``,
+per the table in :mod:`.services`. This is the same shape
+:class:`PullPointHandle` has always used for the subscription bindings.
 """
 
 from __future__ import annotations
@@ -18,12 +28,14 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from . import services as service_table
+from .schema_store import VendoredSchemaTransport, local_path
 from .soap_trace import SoapTrace
 from .wsa_validator import WSAValidator, WSAViolation
 
 log = logging.getLogger(__name__)
 
-# ONVIF service short-name → method on ONVIFCamera for create_*_service()
+
 class ServiceUnbindable(RuntimeError):
     """The DUT advertises a service this client cannot construct.
 
@@ -33,42 +45,16 @@ class ServiceUnbindable(RuntimeError):
     """
 
 
-_SERVICE_FACTORIES: dict[str, str] = {
-    "devicemgmt": "create_devicemgmt_service",
-    "media": "create_media_service",
-    # python-onvif-zeep ships NO media2 WSDL and no media2 entry in its
-    # SERVICES map, so there is nothing to bind: create_media2_service does
-    # not exist, and the generic create_onvif_service path fails too because
-    # the bundled onvif.xsd predates types the ver20 WSDL references (e.g.
-    # tt:StringList). Every media2 test here has therefore never executed
-    # against a real device — they skipped, because until now no DUT under
-    # test advertised the service. Kept mapped so the skip is explicit and
-    # the reason is stated, rather than surfacing as a bare AttributeError.
-    "media2": "__unbindable:media2",
-    "events": "create_events_service",
-    "ptz": "create_ptz_service",
-    "imaging": "create_imaging_service",
-    "analytics": "create_analytics_service",
-    "recording": "create_recording_service",
-    "search": "create_search_service",
-    "replay": "create_replay_service",
-    "deviceio": "create_deviceio_service",
-    # Profile A (Access Control) + Profile D (Door Control). python-onvif-zeep
-    # ships these WSDLs but doesn't expose a dedicated factory helper, so we
-    # go through the generic ``create_onvif_service(name)`` path.
-    "accesscontrol": "__create_onvif_service:accesscontrol",
-    "doorcontrol":   "__create_onvif_service:doorcontrol",
-}
-
-
 @dataclass(slots=True)
 class DUTConfig:
     host: str
     port: int = 80
     user: str = ""
     password: str = ""
-    wsdl_dir: str | None = None  # let python-onvif pick its bundled dir
     timeout: float = 10.0
+    """Connect/read budget for a single HTTP exchange. Deliberately not
+    applied as zeep's ``operation_timeout``: ``PullMessages`` blocks for
+    the subscription's own timeout (up to PT60S) by design."""
 
 
 @dataclass(slots=True)
@@ -85,6 +71,13 @@ class DUTSession:
     """
 
     services: dict[str, str] = field(default_factory=dict)  # name → xaddr
+    unknown_namespaces: set[str] = field(default_factory=set)
+    """Service namespaces the DUT advertised that :mod:`.services` has no
+    row for. Kept out of ``services`` on purpose: filing them there under
+    their raw URI (as this code used to) produced a key no
+    ``requires_services`` entry could ever match, so every test needing
+    that service skipped as "not advertised" — silently green. The
+    ``LOCAL-CLIENT-SERVICES-BINDABLE`` test fails on a non-empty set."""
     capabilities: Any | None = None
     device_info: dict[str, Any] = field(default_factory=dict)
     soap_traces: collections.deque[tuple[str, str]] = field(
@@ -115,8 +108,6 @@ class PullPointHandle:
     session-scope teardown can clean up after a crashing test.
     """
 
-    _EVENT_NS = "{http://www.onvif.org/ver10/events/wsdl}"
-
     def __init__(self, dut: "DUT", create_resp: Any) -> None:
         from onvif import ONVIFService  # python-onvif-zeep
 
@@ -126,25 +117,18 @@ class PullPointHandle:
         self.termination_time = create_resp.TerminationTime
         self._alive = True
 
-        cam = dut._camera
-        _xaddr, wsdl_file, _binding = cam.get_definition("events")
-        common = dict(
-            user=cam.user, passwd=cam.passwd, url=wsdl_file,
-            encrypt=cam.encrypt, daemon=cam.daemon, no_cache=cam.no_cache,
-            dt_diff=cam.dt_diff, transport=cam.transport,
-        )
+        common = dut._service_kwargs("events")
         # Two bindings, same subscription URL.
         self._pull = ONVIFService(
             xaddr=self.subscription_url,
             **common,
-            portType="PullPointSubscription",
-            binding_name=f"{self._EVENT_NS}PullPointSubscriptionBinding",
+            binding_name=service_table.event_binding_name("pullpoint"),
         )
         self._mgr = ONVIFService(
             xaddr=self.subscription_url,
             **common,
-            portType="SubscriptionManager",
-            binding_name=f"{self._EVENT_NS}SubscriptionManagerBinding",
+            binding_name=service_table.event_binding_name(
+                "subscription_manager"),
         )
         # Attach SOAP trace + WS-Addressing validator plugins to both.
         for svc in (self._pull, self._mgr):
@@ -203,8 +187,6 @@ class NotifyHandle:
     Subscribe/Unsubscribe lifecycle.
     """
 
-    _EVENT_NS = "{http://www.onvif.org/ver10/events/wsdl}"
-
     def __init__(self, dut: "DUT", subscribe_resp: Any) -> None:
         from onvif import ONVIFService
 
@@ -226,15 +208,11 @@ class NotifyHandle:
         self.termination_time = subscribe_resp.TerminationTime
         self._alive = True
 
-        cam = dut._camera
-        _xaddr, wsdl_file, _binding = cam.get_definition("events")
         self._mgr = ONVIFService(
             xaddr=self.subscription_url,
-            user=cam.user, passwd=cam.passwd, url=wsdl_file,
-            encrypt=cam.encrypt, daemon=cam.daemon, no_cache=cam.no_cache,
-            dt_diff=cam.dt_diff, transport=cam.transport,
-            portType="SubscriptionManager",
-            binding_name=f"{self._EVENT_NS}SubscriptionManagerBinding",
+            **dut._service_kwargs("events"),
+            binding_name=service_table.event_binding_name(
+                "subscription_manager"),
         )
         try:
             self._mgr.zeep_client.plugins.append(dut._trace)
@@ -267,31 +245,70 @@ class NotifyHandle:
         self.unsubscribe()
 
 
+_CAMERA_CLASS = None
+
+
+def _make_camera(*args, **kwargs):
+    """Build the ``ONVIFCamera`` subclass lazily, once.
+
+    ``onvif`` is imported inside functions throughout this module so the
+    package stays importable (for ``onvif-tt list``, the parser tests, …)
+    without the SOAP stack being present.
+    """
+    global _CAMERA_CLASS
+    if _CAMERA_CLASS is not None:
+        return _CAMERA_CLASS(*args, **kwargs)
+
+    from onvif import ONVIFCamera  # python-onvif-zeep
+
+    class _Camera(ONVIFCamera):
+        """``ONVIFCamera`` with its implicit discovery disabled.
+
+        Stock ``update_xaddrs()`` runs from ``__init__`` and does two things
+        we do not want. It populates ``self.xaddrs`` from ver10
+        ``GetCapabilities``, which cannot see Media2 at all — we take XAddrs
+        from ``GetServices`` instead. And it opens a real PullPoint
+        subscription on the device (``self.event.CreatePullPointSubscription()``
+        inside a bare ``try/except``) purely to learn a URL, then never
+        unsubscribes it. That leaked one subscription per run, before the
+        trace plugins were attached, so it never even showed up in the report.
+
+        We keep the class for its credential/transport bookkeeping only;
+        service construction happens in :meth:`DUT.__getattr__`.
+        """
+
+        def update_xaddrs(self):
+            self.dt_diff = None
+            self.xaddrs = {}
+
+    _CAMERA_CLASS = _Camera
+    return _CAMERA_CLASS(*args, **kwargs)
+
+
 class DUT:
     """A lazy-loaded ONVIF device handle."""
 
     def __init__(self, config: DUTConfig) -> None:
-        from onvif import ONVIFCamera  # python-onvif-zeep
-
         self.config = config
         self.session = DUTSession()
         self._trace = SoapTrace(self.session.soap_traces)
         self._wsa = WSAValidator()
         self._wsa.attach(self.session.wsa_violations)
-        # We pass our zeep plugin through ONVIFCamera's transport kwargs.
-        kwargs: dict[str, Any] = {}
-        if config.wsdl_dir:
-            kwargs["wsdl_dir"] = config.wsdl_dir
-        self._camera = ONVIFCamera(
+        # One transport, shared by every service: it resolves WSDL/XSD
+        # imports from the vendored store and carries the SOAP requests.
+        # operation_timeout is deliberately left unset — PullMessages
+        # legitimately blocks for the subscription's timeout (PT60S), which
+        # config.timeout (a connect budget) must not cut short.
+        self._transport = VendoredSchemaTransport(timeout=config.timeout)
+        self._camera = _make_camera(
             config.host,
             config.port,
             config.user,
             config.password,
             encrypt=False,
-            **kwargs,
+            transport=self._transport,
         )
-        # zeep clients are created on demand by ONVIFCamera; we attach our
-        # plugin lazily in __getattr__ when each service is first accessed.
+        # Services are constructed on demand in __getattr__.
         self._services: dict[str, Any] = {}
 
     # -- service accessors ----------------------------------------------------
@@ -304,46 +321,90 @@ class DUT:
         with a working alternative should branch on this; tests that genuinely
         require the service should just access it and let the error surface.
         """
-        spec = _SERVICE_FACTORIES.get(name)
-        return spec is not None and not spec.startswith("__unbindable:")
+        svc = service_table.get(name)
+        return svc is not None and local_path(svc.wsdl_url) is not None
+
+    def _service_kwargs(self, name: str) -> dict[str, Any]:
+        """Constructor arguments shared by every ``ONVIFService`` we build.
+
+        Covers credentials, the vendored WSDL path and the shared transport —
+        everything except ``xaddr`` and ``binding_name``, which differ between
+        a service proxy and a subscription-rooted binding.
+        """
+        sd = service_table.get(name)
+        if sd is None:
+            raise ServiceUnbindable(
+                f"{name}: no entry in the ONVIF service table. Add a "
+                f"ServiceDef to onvif_tt/runtime/services.py."
+            )
+        wsdl = local_path(sd.wsdl_url)
+        if wsdl is None:
+            raise ServiceUnbindable(
+                f"{name}: {sd.wsdl_url} is not in the vendored schema store. "
+                f"Run `onvif-tt schemas refresh`. This is a limitation of the "
+                f"client, not a verdict on the device."
+            )
+        cam = self._camera
+        return {
+            "user": cam.user,
+            "passwd": cam.passwd,
+            "url": str(wsdl),
+            "encrypt": cam.encrypt,
+            "daemon": cam.daemon,
+            "no_cache": cam.no_cache,
+            "dt_diff": cam.dt_diff,
+            "transport": self._transport,
+        }
+
+    def _xaddr_for(self, name: str) -> str:
+        """Where to send this service's requests.
+
+        The device management service lives at the fixed entry point ONVIF
+        Core mandates. Everything else comes from ``GetServices`` — which for
+        Media2 is the *only* source, since ver10 ``GetCapabilities`` has no
+        slot for it.
+        """
+        if name == "devicemgmt":
+            host = self.config.host
+            if not host.startswith(("http://", "https://")):
+                host = f"http://{host}"
+            return f"{host}:{self.config.port}/onvif/device_service"
+
+        if not self.session.services:
+            # Local import: features imports this module.
+            from .features import discover_services
+            discover_services(self)
+        xaddr = self.session.services.get(name)
+        if not xaddr:
+            raise ServiceUnbindable(
+                f"{name}: the DUT did not report an XAddr for this service "
+                f"in GetServices or GetCapabilities."
+            )
+        return xaddr
 
     def __getattr__(self, name: str) -> Any:
-        if name in _SERVICE_FACTORIES:
-            svc = self._services.get(name)
-            if svc is None:
-                spec = _SERVICE_FACTORIES[name]
-                if spec.startswith("__unbindable:"):
-                    # Deliberately an error, not a skip. The DUT advertises
-                    # this service; we simply cannot construct a client for it.
-                    # Skipping would report "not applicable" for a device that
-                    # does support it, and leave the run green while a whole
-                    # profile went unverified. Callers that have a working
-                    # fallback should consult can_bind() first.
-                    raise ServiceUnbindable(
-                        f"{name}: the DUT advertises this service but "
-                        f"python-onvif-zeep cannot bind it — it ships no WSDL "
-                        f"for it, and its bundled onvif.xsd predates the "
-                        f"ver20 types. This is a limitation of the client, "
-                        f"not a verdict on the device. See "
-                        f"https://github.com/OpenIPC/onvif-tt/issues/1"
-                    )
-                if spec.startswith("__create_onvif_service:"):
-                    # Generic path for services without a dedicated factory.
-                    wsdl_name = spec.split(":", 1)[1]
-                    svc = self._camera.create_onvif_service(wsdl_name)
-                else:
-                    factory = getattr(self._camera, spec)
-                    svc = factory()
-                # Inject trace + WS-Addressing validator plugins.
-                try:
-                    svc.zeep_client.plugins.append(self._trace)
-                    svc.zeep_client.plugins.append(self._wsa)
-                except AttributeError:
-                    # Older onvif-zeep — plugin list may live elsewhere.
-                    log.debug("Could not attach plugins to %s", name)
-                self._services[name] = svc
-            return svc
-        raise AttributeError(name)
+        if service_table.get(name) is None:
+            raise AttributeError(name)
+        svc = self._services.get(name)
+        if svc is None:
+            from onvif import ONVIFService  # python-onvif-zeep
+
+            sd = service_table.get(name)
+            assert sd is not None  # narrowed by the guard above
+            svc = ONVIFService(
+                xaddr=self._xaddr_for(name),
+                **self._service_kwargs(name),
+                binding_name=sd.binding_name,
+            )
+            # Inject trace + WS-Addressing validator plugins.
+            try:
+                svc.zeep_client.plugins.append(self._trace)
+                svc.zeep_client.plugins.append(self._wsa)
+            except AttributeError:
+                # Older onvif-zeep — plugin list may live elsewhere.
+                log.debug("Could not attach plugins to %s", name)
+            self._services[name] = svc
+        return svc
 
     # -- helpers --------------------------------------------------------------
 
@@ -390,15 +451,11 @@ class DUT:
         """
         from onvif import ONVIFService
 
-        cam = self._camera
-        _xaddr, wsdl_file, _binding = cam.get_definition("events")
         np = ONVIFService(
-            xaddr=self.session.services.get("events") or _xaddr,
-            user=cam.user, passwd=cam.passwd, url=wsdl_file,
-            encrypt=cam.encrypt, daemon=cam.daemon, no_cache=cam.no_cache,
-            dt_diff=cam.dt_diff, transport=cam.transport,
-            portType="NotificationProducer",
-            binding_name="{http://www.onvif.org/ver10/events/wsdl}NotificationProducerBinding",
+            xaddr=self._xaddr_for("events"),
+            **self._service_kwargs("events"),
+            binding_name=service_table.event_binding_name(
+                "notification_producer"),
         )
         try:
             np.zeep_client.plugins.append(self._trace)
