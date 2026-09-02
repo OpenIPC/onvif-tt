@@ -115,15 +115,31 @@ def _as_datetime(field) -> datetime.datetime | None:
     LocalDateTime is only ever compared against the UTCDateTime here, never
     read as an instant, so tagging it the same way is harmless and keeps the
     two subtractable.
+
+    Seconds are added rather than passed to the constructor. ``tt:Time/Second``
+    is documented in the schema as "Range is 0 to 61 (typically 59)" — room for
+    a leap second, and for the second leap the 1970s standards allowed — while
+    ``datetime`` stops at 59 and raises for the rest. Constructing those
+    through the constructor would turn a conformant device's timestamp into a
+    ``None``, which the caller can only report as a missing UTCDateTime: a
+    mandatory test failing, during a leap second, with the wrong reason.
+    Rolling 60 into the following minute is not the leap second's true
+    instant, but this value is only ever differenced against another clock,
+    and one second of error in a check whose tolerance is thirty does not
+    change any answer.
+
+    An hour or a minute out of range still raises, and still means what a
+    ``None`` says: the field is not a datetime.
     """
     if field is None or field.Date is None or field.Time is None:
         return None
     try:
-        return datetime.datetime(
+        base = datetime.datetime(
             field.Date.Year, field.Date.Month, field.Date.Day,
-            field.Time.Hour, field.Time.Minute, field.Time.Second,
+            field.Time.Hour, field.Time.Minute, 0,
             tzinfo=datetime.timezone.utc)
-    except (TypeError, ValueError):
+        return base + datetime.timedelta(seconds=int(field.Time.Second))
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
@@ -175,11 +191,21 @@ def test_utc_datetime_is_actually_utc(dut: DUT, spec) -> None:
     on_a_zone_boundary = (
         min(off_grid, _QUARTER_HOUR - off_grid) <= _QUARTER_HOUR_SLOP)
 
-    if on_a_zone_boundary and (local is None or local == reported):
-        echoed = ("LocalDateTime repeats it exactly" if local is not None
-                  else "no LocalDateTime was sent to compare")
-        diagnosis = (f"the skew is a whole zone offset and {echoed}, so the "
-                     f"device is reporting local time as UTC")
+    # Only a LocalDateTime that is *present* and repeats the UTCDateTime
+    # exactly proves the device conflated the two. It is an optional element,
+    # so its absence is not evidence of anything, and saying otherwise would
+    # hand a device with an ordinary wrong clock a confidently wrong
+    # root cause. A zone-shaped skew on its own is worth naming as a
+    # suspicion — it is a narrow target to hit by accident — but it is a
+    # suspicion, and the message says so.
+    if on_a_zone_boundary and local is not None and local == reported:
+        diagnosis = ("the skew is a whole zone offset and LocalDateTime "
+                     "repeats it exactly, so the device is reporting local "
+                     "time as UTC")
+    elif on_a_zone_boundary and local is None:
+        diagnosis = ("the skew is a whole zone offset, which is the shape of "
+                     "a device reporting local time as UTC, but it sent no "
+                     "LocalDateTime to corroborate that")
     else:
         diagnosis = "the device clock is not set to real UTC"
 
