@@ -10,6 +10,8 @@ WSDL parameters — ``GetServices(False)``, ``GetCapabilities("All")``.
 
 from __future__ import annotations
 
+import datetime
+
 import pytest
 
 from ..registry import register
@@ -88,6 +90,104 @@ def test_get_system_date_and_time(dut: DUT, spec) -> None:
     assert dt.UTCDateTime is not None, "UTCDateTime missing"
     assert dt.UTCDateTime.Date.Year > 1970, (
         f"UTC year looks bogus: {dt.UTCDateTime.Date.Year}"
+    )
+
+
+#: A device's UTCDateTime and the client's own UTC clock are two readings of
+#: one instant. Generous enough to absorb a slow SOAP round trip and a device
+#: that only keeps whole seconds; far tighter than the smallest real zone
+#: offset, which is what this is here to catch.
+_UTC_REPORT_TOLERANCE = datetime.timedelta(seconds=30)
+
+#: Every civil UTC offset in the tz database is a whole number of quarter
+#: hours, so a skew that lands on one is a zone rather than a clock nobody
+#: set. Matched with a couple of seconds' slop: the device reports whole
+#: seconds and the skew is measured against the midpoint of a round trip, so
+#: an exact offset arrives as 35999 as readily as 36000.
+_QUARTER_HOUR = 900
+_QUARTER_HOUR_SLOP = 2
+
+
+def _as_datetime(field) -> datetime.datetime | None:
+    """A tt:DateTime (Date + Time children) as an aware datetime.
+
+    Tagged UTC because that is what the element under test claims to be; the
+    LocalDateTime is only ever compared against the UTCDateTime here, never
+    read as an instant, so tagging it the same way is harmless and keeps the
+    two subtractable.
+    """
+    if field is None or field.Date is None or field.Time is None:
+        return None
+    try:
+        return datetime.datetime(
+            field.Date.Year, field.Date.Month, field.Date.Day,
+            field.Time.Hour, field.Time.Minute, field.Time.Second,
+            tzinfo=datetime.timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+@register("LOCAL-DEVICE-UTC-DATETIME", profiles={"S", "T"}, mandatory=True,
+          requires_services={"devicemgmt"})
+def test_utc_datetime_is_actually_utc(dut: DUT, spec) -> None:
+    """The UTCDateTime a device reports has to be UTC.
+
+    DEVICE-3-1-1 checks that the response *carries* a UTCDateTime of the
+    right shape and stops there — which is all the catalog procedure asks
+    for. Nothing in the corpus compares the value to the client's own clock,
+    so a device that fills UTCDateTime from local time passes the whole
+    suite; and on a DUT configured in UTC, as most lab and CI devices are,
+    the two readings coincide and there is nothing to see either way.
+
+    It is not a cosmetic field. ONVIF Core leaves GetSystemDateAndTime below
+    the authenticated access levels precisely so a client refused on WSSE can
+    ask the device the time and re-date wsu:Created by the answer. A device
+    that answers with local time therefore teaches such a client to sign its
+    tokens a whole zone offset away from real UTC, and then rejects them for
+    drifting outside the freshness window: correct credentials that can never
+    authenticate. Seen in the field on OpenIPC/majestic-webui#292, where the
+    offset was exactly the camera's UTC+10.
+
+    The host clock is the reference, which is the assumption the tool already
+    makes every time it signs a UsernameToken. Two things fail this test — a
+    device clock nobody set, and local time in the UTC field — so the message
+    says which the evidence points at rather than leaving it to the reader.
+    """
+    before = datetime.datetime.now(datetime.timezone.utc)
+    resp = dut.devicemgmt.GetSystemDateAndTime()
+    after = datetime.datetime.now(datetime.timezone.utc)
+
+    reported = _as_datetime(getattr(resp, "UTCDateTime", None))
+    assert reported is not None, (
+        "UTCDateTime missing or incomplete — DEVICE-3-1-1 covers its shape"
+    )
+
+    if (before - _UTC_REPORT_TOLERANCE
+            <= reported
+            <= after + _UTC_REPORT_TOLERANCE):
+        return
+
+    seconds = round(
+        (reported - (before + (after - before) / 2)).total_seconds())
+    local = _as_datetime(getattr(resp, "LocalDateTime", None))
+
+    off_grid = seconds % _QUARTER_HOUR
+    on_a_zone_boundary = (
+        min(off_grid, _QUARTER_HOUR - off_grid) <= _QUARTER_HOUR_SLOP)
+
+    if on_a_zone_boundary and (local is None or local == reported):
+        echoed = ("LocalDateTime repeats it exactly" if local is not None
+                  else "no LocalDateTime was sent to compare")
+        diagnosis = (f"the skew is a whole zone offset and {echoed}, so the "
+                     f"device is reporting local time as UTC")
+    else:
+        diagnosis = "the device clock is not set to real UTC"
+
+    pytest.fail(
+        f"device UTCDateTime is {seconds:+d}s from the client's UTC clock "
+        f"(device {reported}, client {before}): {diagnosis}. A client that "
+        f"dates wsu:Created from this answer is refused by any device "
+        f"enforcing a freshness window on it."
     )
 
 
