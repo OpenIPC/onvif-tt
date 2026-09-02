@@ -10,6 +10,8 @@ WSDL parameters — ``GetServices(False)``, ``GetCapabilities("All")``.
 
 from __future__ import annotations
 
+import datetime
+
 import pytest
 
 from ..registry import register
@@ -88,6 +90,130 @@ def test_get_system_date_and_time(dut: DUT, spec) -> None:
     assert dt.UTCDateTime is not None, "UTCDateTime missing"
     assert dt.UTCDateTime.Date.Year > 1970, (
         f"UTC year looks bogus: {dt.UTCDateTime.Date.Year}"
+    )
+
+
+#: A device's UTCDateTime and the client's own UTC clock are two readings of
+#: one instant. Generous enough to absorb a slow SOAP round trip and a device
+#: that only keeps whole seconds; far tighter than the smallest real zone
+#: offset, which is what this is here to catch.
+_UTC_REPORT_TOLERANCE = datetime.timedelta(seconds=30)
+
+#: Every civil UTC offset in the tz database is a whole number of quarter
+#: hours, so a skew that lands on one is a zone rather than a clock nobody
+#: set. Matched with a couple of seconds' slop: the device reports whole
+#: seconds and the skew is measured against the midpoint of a round trip, so
+#: an exact offset arrives as 35999 as readily as 36000.
+_QUARTER_HOUR = 900
+_QUARTER_HOUR_SLOP = 2
+
+
+def _as_datetime(field) -> datetime.datetime | None:
+    """A tt:DateTime (Date + Time children) as an aware datetime.
+
+    Tagged UTC because that is what the element under test claims to be; the
+    LocalDateTime is only ever compared against the UTCDateTime here, never
+    read as an instant, so tagging it the same way is harmless and keeps the
+    two subtractable.
+
+    Seconds are added rather than passed to the constructor. ``tt:Time/Second``
+    is documented in the schema as "Range is 0 to 61 (typically 59)" — room for
+    a leap second, and for the second leap the 1970s standards allowed — while
+    ``datetime`` stops at 59 and raises for the rest. Constructing those
+    through the constructor would turn a conformant device's timestamp into a
+    ``None``, which the caller can only report as a missing UTCDateTime: a
+    mandatory test failing, during a leap second, with the wrong reason.
+    Rolling 60 into the following minute is not the leap second's true
+    instant, but this value is only ever differenced against another clock,
+    and one second of error in a check whose tolerance is thirty does not
+    change any answer.
+
+    An hour or a minute out of range still raises, and still means what a
+    ``None`` says: the field is not a datetime.
+    """
+    if field is None or field.Date is None or field.Time is None:
+        return None
+    try:
+        base = datetime.datetime(
+            field.Date.Year, field.Date.Month, field.Date.Day,
+            field.Time.Hour, field.Time.Minute, 0,
+            tzinfo=datetime.timezone.utc)
+        return base + datetime.timedelta(seconds=int(field.Time.Second))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+@register("LOCAL-DEVICE-UTC-DATETIME", profiles={"S", "T"}, mandatory=True,
+          requires_services={"devicemgmt"})
+def test_utc_datetime_is_actually_utc(dut: DUT, spec) -> None:
+    """The UTCDateTime a device reports has to be UTC.
+
+    DEVICE-3-1-1 checks that the response *carries* a UTCDateTime of the
+    right shape and stops there — which is all the catalog procedure asks
+    for. Nothing in the corpus compares the value to the client's own clock,
+    so a device that fills UTCDateTime from local time passes the whole
+    suite; and on a DUT configured in UTC, as most lab and CI devices are,
+    the two readings coincide and there is nothing to see either way.
+
+    It is not a cosmetic field. ONVIF Core leaves GetSystemDateAndTime below
+    the authenticated access levels precisely so a client refused on WSSE can
+    ask the device the time and re-date wsu:Created by the answer. A device
+    that answers with local time therefore teaches such a client to sign its
+    tokens a whole zone offset away from real UTC, and then rejects them for
+    drifting outside the freshness window: correct credentials that can never
+    authenticate. Seen in the field on OpenIPC/majestic-webui#292, where the
+    offset was exactly the camera's UTC+10.
+
+    The host clock is the reference, which is the assumption the tool already
+    makes every time it signs a UsernameToken. Two things fail this test — a
+    device clock nobody set, and local time in the UTC field — so the message
+    says which the evidence points at rather than leaving it to the reader.
+    """
+    before = datetime.datetime.now(datetime.timezone.utc)
+    resp = dut.devicemgmt.GetSystemDateAndTime()
+    after = datetime.datetime.now(datetime.timezone.utc)
+
+    reported = _as_datetime(getattr(resp, "UTCDateTime", None))
+    assert reported is not None, (
+        "UTCDateTime missing or incomplete — DEVICE-3-1-1 covers its shape"
+    )
+
+    if (before - _UTC_REPORT_TOLERANCE
+            <= reported
+            <= after + _UTC_REPORT_TOLERANCE):
+        return
+
+    seconds = round(
+        (reported - (before + (after - before) / 2)).total_seconds())
+    local = _as_datetime(getattr(resp, "LocalDateTime", None))
+
+    off_grid = seconds % _QUARTER_HOUR
+    on_a_zone_boundary = (
+        min(off_grid, _QUARTER_HOUR - off_grid) <= _QUARTER_HOUR_SLOP)
+
+    # Only a LocalDateTime that is *present* and repeats the UTCDateTime
+    # exactly proves the device conflated the two. It is an optional element,
+    # so its absence is not evidence of anything, and saying otherwise would
+    # hand a device with an ordinary wrong clock a confidently wrong
+    # root cause. A zone-shaped skew on its own is worth naming as a
+    # suspicion — it is a narrow target to hit by accident — but it is a
+    # suspicion, and the message says so.
+    if on_a_zone_boundary and local is not None and local == reported:
+        diagnosis = ("the skew is a whole zone offset and LocalDateTime "
+                     "repeats it exactly, so the device is reporting local "
+                     "time as UTC")
+    elif on_a_zone_boundary and local is None:
+        diagnosis = ("the skew is a whole zone offset, which is the shape of "
+                     "a device reporting local time as UTC, but it sent no "
+                     "LocalDateTime to corroborate that")
+    else:
+        diagnosis = "the device clock is not set to real UTC"
+
+    pytest.fail(
+        f"device UTCDateTime is {seconds:+d}s from the client's UTC clock "
+        f"(device {reported}, client {before}): {diagnosis}. A client that "
+        f"dates wsu:Created from this answer is refused by any device "
+        f"enforcing a freshness window on it."
     )
 
 
