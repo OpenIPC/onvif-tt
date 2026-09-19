@@ -12,9 +12,42 @@ from __future__ import annotations
 import datetime as _dt
 
 import pytest
+from lxml import etree
 
 from ..registry import register
 from ..runtime.dut import DUT
+
+_WSTOP_DOCUMENTATION = (
+    "{http://docs.oasis-open.org/wsn/t-1}documentation"
+)
+
+
+def _topic_roots(
+    value: object, _seen: set[int] | None = None,
+) -> list[etree._Element]:
+    """Return the top-level topic elements from a Zeep TopicSet value."""
+    if isinstance(value, etree._Element):
+        if not isinstance(value.tag, str):
+            return []
+        if etree.QName(value).localname == "TopicSet":
+            return [child for child in value
+                    if (isinstance(child, etree._Element)
+                        and isinstance(child.tag, str)
+                        and child.tag != _WSTOP_DOCUMENTATION)]
+        return [value]
+
+    if _seen is None:
+        _seen = set()
+    if id(value) in _seen:
+        return []
+    _seen.add(id(value))
+
+    if isinstance(value, (list, tuple)):
+        return [root for item in value
+                for root in _topic_roots(item, _seen)]
+
+    wildcard = getattr(value, "_value_1", None)
+    return _topic_roots(wildcard, _seen) if wildcard is not None else []
 
 
 @register("EVENT-1-1-2", profiles={"S", "T"}, mandatory=True,
@@ -29,8 +62,9 @@ def test_event_get_event_properties(dut: DUT, spec) -> None:
     assert props.TopicNamespaceLocation, (
         "GetEventProperties.TopicNamespaceLocation empty"
     )
-    # TopicSet is an opaque XML element; presence is the assertion here.
-    assert props.TopicSet is not None, "TopicSet missing from GetEventProperties"
+    assert _topic_roots(props.TopicSet), (
+        "GetEventProperties.TopicSet contains no usable topic nodes"
+    )
 
 
 # ---------------------------------------------------------------------------
