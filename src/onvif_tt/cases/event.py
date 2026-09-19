@@ -20,6 +20,7 @@ from ..runtime.dut import DUT
 _WSTOP_DOCUMENTATION = (
     "{http://docs.oasis-open.org/wsn/t-1}documentation"
 )
+_WSTOP_TOPIC_SET = "{http://docs.oasis-open.org/wsn/t-1}TopicSet"
 
 
 def _topic_roots(
@@ -29,7 +30,9 @@ def _topic_roots(
     if isinstance(value, etree._Element):
         if not isinstance(value.tag, str):
             return []
-        if etree.QName(value).localname == "TopicSet":
+        if value.tag == _WSTOP_DOCUMENTATION:
+            return []
+        if value.tag == _WSTOP_TOPIC_SET:
             return [child for child in value
                     if (isinstance(child, etree._Element)
                         and isinstance(child.tag, str)

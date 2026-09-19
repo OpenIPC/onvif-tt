@@ -85,6 +85,22 @@ def test_topic_roots_ignores_ws_topics_documentation():
     assert _topic_roots(topic_set) == []
 
 
+def test_topic_roots_ignores_ws_topics_documentation_in_zeep_wildcard():
+    documentation = etree.fromstring(
+        b'<wstop:documentation '
+        b'xmlns:wstop="http://docs.oasis-open.org/wsn/t-1">'
+        b'descriptive metadata</wstop:documentation>'
+    )
+
+    assert _topic_roots(SimpleNamespace(_value_1=[documentation])) == []
+
+
+def test_topic_roots_accepts_vendor_topic_named_topic_set():
+    topic = etree.fromstring(b'<vendor:TopicSet xmlns:vendor="urn:vendor"/>')
+
+    assert _topic_roots(topic) == [topic]
+
+
 def test_topic_roots_terminates_on_cyclic_supported_values():
     items = []
     items.append(items)
