@@ -211,31 +211,45 @@ def _within(rng, v):
     return rng is not None and rng.Min <= v <= rng.Max
 
 
-def _pick_space(spaces, default_uri):
-    """The configuration's default space when the options offer it, else the
-    first one offered."""
-    return next((s for s in spaces if s.URI == default_uri), spaces[0])
+def _moving_vector(spaces, default_uri, two_d: bool):
+    """A velocity that moves, in the first offered space that allows one --
+    the configuration's default space first: a non-zero x, or (two_d) a
+    non-zero y, each inside its own range, the other at 0 when its range holds
+    0. None when no offered space allows anything but 0."""
+    ordered = sorted(spaces, key=lambda s: s.URI != default_uri)
+    for s in ordered:
+        if not two_d:
+            x = _nonzero(s.XRange)
+            if x is not None:
+                return {"x": x, "space": s.URI}
+            continue
+        if s.XRange is None or s.YRange is None:
+            continue
+        x, y = _nonzero(s.XRange), _nonzero(s.YRange)
+        if x is not None:
+            y = 0.0 if _within(s.YRange, 0.0) else y if y is not None else s.YRange.Min
+        elif y is not None:
+            x = 0.0 if _within(s.XRange, 0.0) else s.XRange.Min
+        else:
+            continue
+        return {"x": x, "y": y, "space": s.URI}
+    return None
 
 
 def _continuous_axes(dut: DUT, profile_token: str):
     """[(axis, velocity)] for each continuous movement the profile's options
-    offer, in an offered space (named in the vector) at a non-zero velocity
-    inside its range. An axis whose range holds only 0 is left out."""
+    offer, in an offered space (named in the vector) at a velocity that moves.
+    An axis no offered space lets move is left out."""
     cfg, opts = _options(dut, profile_token)
     axes = []
-    pt = getattr(opts.Spaces, "ContinuousPanTiltVelocitySpace", None) or []
+    pt = _moving_vector(getattr(opts.Spaces, "ContinuousPanTiltVelocitySpace", None) or [],
+                        getattr(cfg, "DefaultContinuousPanTiltVelocitySpace", None), True)
     if pt:
-        s = _pick_space(pt, getattr(cfg, "DefaultContinuousPanTiltVelocitySpace", None))
-        x = _nonzero(s.XRange)
-        y = 0.0 if _within(s.YRange, 0.0) else (s.YRange.Max if s.YRange else 0.0)
-        if x is not None:
-            axes.append(("PanTilt", {"PanTilt": {"x": x, "y": y, "space": s.URI}}))
-    z = getattr(opts.Spaces, "ContinuousZoomVelocitySpace", None) or []
+        axes.append(("PanTilt", {"PanTilt": pt}))
+    z = _moving_vector(getattr(opts.Spaces, "ContinuousZoomVelocitySpace", None) or [],
+                       getattr(cfg, "DefaultContinuousZoomVelocitySpace", None), False)
     if z:
-        s = _pick_space(z, getattr(cfg, "DefaultContinuousZoomVelocitySpace", None))
-        x = _nonzero(s.XRange)
-        if x is not None:
-            axes.append(("Zoom", {"Zoom": {"x": x, "space": s.URI}}))
+        axes.append(("Zoom", {"Zoom": z}))
     return axes
 
 
@@ -399,6 +413,7 @@ def test_ptz_configurations_and_options_consistency(dut: DUT, spec) -> None:
 
 @register("PTZ-2-1-10", profiles={"S"}, mandatory=False,
           requires_services={"devicemgmt", "ptz"},
+          requires_writes=True,
           xfail_on=[{
               "Manufacturer": "H264",
               "reason": "Xiongmai stock firmware answers SetConfiguration for a "
@@ -407,7 +422,7 @@ def test_ptz_configurations_and_options_consistency(dut: DUT, spec) -> None:
 def test_ptz_set_configuration_invalid_token_fault(dut: DUT, spec) -> None:
     """PTZ.html#tc.PTZ-2-1-10 — SetConfiguration naming a configuration that
     does not exist is a SOAP fault (env:Sender/ter:InvalidArgVal/ter:NoConfig).
-    Changes nothing, so it is not a write."""
+    A write all the same: a device that gets this wrong may take the request."""
     c = _configurations(dut)[0]
     bad = _dump(c)
     bad["token"] = "__definitely_not_a_real_token__"
@@ -475,6 +490,8 @@ def test_ptz_continuous_move_timeout(dut: DUT, spec) -> None:
     rng = getattr(opts, "PTZTimeout", None)
     if rng is not None:
         timeout = min(max(timeout, rng.Min), rng.Max)
+    if timeout > _LONGEST_TIMED_MOVE:
+        pytest.skip(f"shortest PTZTimeout the options allow, {timeout}, is too long to wait for")
     axes = _continuous_axes(dut, profile_token)
     if not axes:
         pytest.skip("configuration offers no continuous movement with a non-zero velocity")
@@ -485,6 +502,9 @@ def test_ptz_continuous_move_timeout(dut: DUT, spec) -> None:
             _assert_idle(dut, profile_token, axis)
         finally:
             _stop(dut, profile_token)
+
+
+_LONGEST_TIMED_MOVE = datetime.timedelta(minutes=5)
 
 
 def _generic_velocity_move(dut: DUT, space_name: str, uri: str, two_d: bool) -> None:
