@@ -8,6 +8,7 @@ with no pan/tilt head is exercised on zoom, not skipped on pan/tilt.
 
 from __future__ import annotations
 
+import datetime
 import time
 
 import pytest
@@ -157,13 +158,12 @@ def test_ptz_continuous_move_and_stop(dut: DUT, spec) -> None:
     exercise the move at all.
     """
     profile_token = _first_ptz_profile_token(dut)
-    spaces = _option_spaces(dut, profile_token)
-    axes = _continuous_axes(spaces)
+    axes = _continuous_axes(dut, profile_token)
     if not axes:
-        pytest.skip("configuration offers no continuous movement")
+        pytest.skip("configuration offers no continuous movement with a non-zero velocity")
     for axis, velocity in axes:
-        _continuous_move(dut, profile_token, velocity)
         try:
+            _continuous_move(dut, profile_token, velocity)
             time.sleep(0.5)
         finally:
             _stop(dut, profile_token)
@@ -189,25 +189,53 @@ def _config_for_profile(dut: DUT, profile_token: str):
     pytest.skip("profile has no PTZConfiguration")
 
 
-def _option_spaces(dut: DUT, profile_token: str):
+def _options(dut: DUT, profile_token: str):
     cfg = _config_for_profile(dut, profile_token)
     opts = dut.ptz.GetConfigurationOptions(cfg.token)
     assert opts is not None and getattr(opts, "Spaces", None) is not None, (
         "GetConfigurationOptions returned no Spaces"
     )
-    return opts.Spaces
+    return cfg, opts
 
 
-def _continuous_axes(spaces):
-    """[(axis, velocity)] for each continuous movement offered, at the top of
-    the first advertised range."""
+def _nonzero(rng):
+    """A non-zero value inside `rng`, its Max unless that is 0; None if the
+    range holds nothing but 0."""
+    for v in (rng.Max, rng.Min):
+        if v:
+            return v
+    return None
+
+
+def _within(rng, v):
+    return rng is not None and rng.Min <= v <= rng.Max
+
+
+def _pick_space(spaces, default_uri):
+    """The configuration's default space when the options offer it, else the
+    first one offered."""
+    return next((s for s in spaces if s.URI == default_uri), spaces[0])
+
+
+def _continuous_axes(dut: DUT, profile_token: str):
+    """[(axis, velocity)] for each continuous movement the profile's options
+    offer, in an offered space (named in the vector) at a non-zero velocity
+    inside its range. An axis whose range holds only 0 is left out."""
+    cfg, opts = _options(dut, profile_token)
     axes = []
-    pt = getattr(spaces, "ContinuousPanTiltVelocitySpace", None) or []
+    pt = getattr(opts.Spaces, "ContinuousPanTiltVelocitySpace", None) or []
     if pt:
-        axes.append(("PanTilt", {"PanTilt": {"x": pt[0].XRange.Max, "y": 0.0}}))
-    z = getattr(spaces, "ContinuousZoomVelocitySpace", None) or []
+        s = _pick_space(pt, getattr(cfg, "DefaultContinuousPanTiltVelocitySpace", None))
+        x = _nonzero(s.XRange)
+        y = 0.0 if _within(s.YRange, 0.0) else (s.YRange.Max if s.YRange else 0.0)
+        if x is not None:
+            axes.append(("PanTilt", {"PanTilt": {"x": x, "y": y, "space": s.URI}}))
+    z = getattr(opts.Spaces, "ContinuousZoomVelocitySpace", None) or []
     if z:
-        axes.append(("Zoom", {"Zoom": {"x": z[0].XRange.Max}}))
+        s = _pick_space(z, getattr(cfg, "DefaultContinuousZoomVelocitySpace", None))
+        x = _nonzero(s.XRange)
+        if x is not None:
+            axes.append(("Zoom", {"Zoom": {"x": x, "space": s.URI}}))
     return axes
 
 
@@ -229,9 +257,18 @@ def _stop(dut: DUT, profile_token: str) -> None:
 
 
 def _assert_idle(dut: DUT, profile_token: str, axis: str) -> None:
+    """MoveStatus for `axis` is IDLE or UNKNOWN. A device may leave MoveStatus
+    out only when its capabilities say it does not report one; then there is
+    nothing to observe."""
     status = dut.ptz.GetStatus(profile_token)
     move = getattr(getattr(status, "MoveStatus", None), axis, None)
-    assert move in (None, "IDLE", "UNKNOWN"), (
+    if move is None:
+        caps = dut.ptz.GetServiceCapabilities()
+        assert not getattr(caps, "MoveStatus", False), (
+            f"GetStatus has no MoveStatus.{axis}, though the capabilities say MoveStatus"
+        )
+        return
+    assert move in ("IDLE", "UNKNOWN"), (
         f"MoveStatus.{axis} is {move!r} after the move ended; expected IDLE or UNKNOWN"
     )
 
@@ -387,7 +424,9 @@ def test_ptz_set_configuration(dut: DUT, spec) -> None:
     """PTZ.html#tc.PTZ-2-1-9 — PTZ SET CONFIGURATION.
 
     Set DefaultPTZTimeout to the options' Max (or Min, when it already is the
-    Max) without persistence, read it back, and put the original back.
+    Max) without persistence, read it back, and put the original back. A
+    configuration with no DefaultPTZTimeout has no value to put back, so it is
+    left alone.
     """
     c = _configurations(dut)[0]
     o = dut.ptz.GetConfigurationOptions(c.token)
@@ -395,6 +434,8 @@ def test_ptz_set_configuration(dut: DUT, spec) -> None:
     if rng is None:
         pytest.skip("no PTZTimeout range to set DefaultPTZTimeout within")
     original = c.DefaultPTZTimeout
+    if original is None:
+        pytest.skip("no DefaultPTZTimeout to restore after the change")
     target = rng.Min if original == rng.Max else rng.Max
 
     def put(timeout):
@@ -410,8 +451,7 @@ def test_ptz_set_configuration(dut: DUT, spec) -> None:
         got = dut.ptz.GetConfiguration(c.token).DefaultPTZTimeout
         assert got == target, f"DefaultPTZTimeout reads {got} after setting {target}"
     finally:
-        if original is not None:
-            put(original)
+        put(original)
 
 
 # ---------------------------------------------------------------------------
@@ -424,41 +464,52 @@ def test_ptz_set_configuration(dut: DUT, spec) -> None:
 def test_ptz_continuous_move_timeout(dut: DUT, spec) -> None:
     """PTZ.html#tc.PTZ-3-1-4 — PTZ CONTINUOUS MOVE.
 
-    For each continuous movement offered: ContinuousMove with Timeout PT60S,
-    and 60 s later GetStatus must report MoveStatus IDLE or UNKNOWN for that
-    axis -- the move ended by itself. (A minute per axis, as the spec has it.)
+    For each continuous movement offered: ContinuousMove with a Timeout of
+    60 s (as the spec has it), or the nearest the options' PTZTimeout range
+    allows, and once it has run out GetStatus must report MoveStatus IDLE or
+    UNKNOWN for that axis -- the move ended by itself.
     """
     profile_token = _first_ptz_profile_token(dut)
-    axes = _continuous_axes(_option_spaces(dut, profile_token))
+    _, opts = _options(dut, profile_token)
+    timeout = datetime.timedelta(seconds=60)
+    rng = getattr(opts, "PTZTimeout", None)
+    if rng is not None:
+        timeout = min(max(timeout, rng.Min), rng.Max)
+    axes = _continuous_axes(dut, profile_token)
     if not axes:
-        pytest.skip("configuration offers no continuous movement")
+        pytest.skip("configuration offers no continuous movement with a non-zero velocity")
     for axis, velocity in axes:
         try:
-            _continuous_move(dut, profile_token, velocity, timeout="PT60S")
-            time.sleep(61)
+            _continuous_move(dut, profile_token, velocity, timeout=timeout)
+            time.sleep(timeout.total_seconds() + 1)
             _assert_idle(dut, profile_token, axis)
         finally:
             _stop(dut, profile_token)
 
 
 def _generic_velocity_move(dut: DUT, space_name: str, uri: str, two_d: bool) -> None:
-    nodes = dut.ptz.GetNodes() or []
-    node = next((n for n in nodes
-                 if getattr(n.SupportedPTZSpaces, space_name, None)), None)
-    if node is None:
-        pytest.skip(f"no node supports {space_name}")
-    spaces = getattr(node.SupportedPTZSpaces, space_name)
+    """Through the first profile whose configuration options offer `space_name`
+    -- each must include the generic space -- move at both ends of the generic
+    range."""
+    found = None
+    for p in dut.media.GetProfiles() or []:
+        cfg = getattr(p, "PTZConfiguration", None)
+        if not cfg:
+            continue
+        opts = dut.ptz.GetConfigurationOptions(cfg.token)
+        spaces = getattr(getattr(opts, "Spaces", None), space_name, None) or []
+        if spaces:
+            found = (p, spaces)
+            break
+    if found is None:
+        pytest.skip(f"no profile's PTZ configuration offers {space_name}")
+    profile, spaces = found
     generic = [s for s in spaces if s.URI == uri]
-    assert generic, f"node {node.token} has {space_name} but not the generic {uri}"
+    assert generic, f"profile {profile.token} offers {space_name} but not the generic {uri}"
     g = generic[0]
     assert g.XRange is not None and g.XRange.Min <= g.XRange.Max, "XRange missing or inverted"
     if two_d:
         assert g.YRange is not None and g.YRange.Min <= g.YRange.Max, "YRange missing or inverted"
-    profile = next((p for p in dut.media.GetProfiles() or []
-                    if getattr(p, "PTZConfiguration", None)
-                    and p.PTZConfiguration.NodeToken == node.token), None)
-    if profile is None:
-        pytest.skip(f"no profile uses node {node.token}")
     try:
         for edge in ("Max", "Min"):
             x = getattr(g.XRange, edge)
@@ -499,6 +550,7 @@ def test_ptz_generic_zoom_velocity_space(dut: DUT, spec) -> None:
 # ---------------------------------------------------------------------------
 
 _PTZ_NS = "http://www.onvif.org/ver20/ptz/wsdl"
+_XS_BOOLEAN = {"true": True, "1": True, "false": False, "0": False}
 _PTZ_CAP_FIELDS = ("EFlip", "Reverse", "GetCompatibleConfigurations", "MoveStatus",
                    "StatusPosition")
 _XM_NS_ATTRS = {
@@ -546,6 +598,8 @@ def test_ptz_get_services_and_capabilities_consistency(dut: DUT, spec) -> None:
             continue
         got = attrs.get(f)
         assert got is not None, f"embedded Capabilities lacks {f}"
-        assert got.lower() == str(want).lower(), (
+        parsed = _XS_BOOLEAN.get(got.strip())
+        assert parsed is not None, f"embedded {f}={got!r} is not an xs:boolean"
+        assert parsed == want, (
             f"{f}: GetServices says {got}, GetServiceCapabilities says {want}"
         )
