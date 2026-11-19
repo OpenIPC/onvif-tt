@@ -123,9 +123,9 @@ def test_pullpoint_pull_messages(dut: DUT, spec) -> None:
 # Basic Notification (NotificationProducer)
 #
 # The Subscribe operation needs a ConsumerReference — the URL the device
-# would POST Notify messages to. We don't run an HTTP receiver; the
-# tests only exercise the Subscribe / Renew / Unsubscribe lifecycle so a
-# throwaway URL is fine.
+# POSTs Notify messages to. The lifecycle tests here only exercise
+# Subscribe / Renew / Unsubscribe, so a throwaway URL is fine; delivery is
+# tested further down against a real consumer (runtime/notify_consumer.py).
 # ---------------------------------------------------------------------------
 
 @register("EVENT-2-1-9", profiles={"S", "T"}, mandatory=False,
@@ -215,3 +215,93 @@ def test_pullpoint_unsubscribe(dut: DUT, spec) -> None:
     # follow-up PullMessages must NOT succeed silently.
     with pytest.raises(Exception):  # noqa: BLE001 — any error is fine
         pp.pull_messages(timeout="PT1S", limit=1)
+
+
+# ---------------------------------------------------------------------------
+# Basic Notification delivery — a real consumer the DUT pushes to
+#
+# Everything above checks that a subscription can be made. An NVR that
+# records on motion depends on the other half: the Notify actually arriving.
+# SetSynchronizationPoint makes the test deterministic — a device with
+# property events must restate them, so no motion has to be staged.
+# ---------------------------------------------------------------------------
+
+_TT = "http://www.onvif.org/ver10/schema"
+_WSNT_NS = "http://docs.oasis-open.org/wsn/b-2"
+
+
+def _property_ops(msgs) -> list[str]:
+    return [m.get("PropertyOperation") or ""
+            for nm in msgs for m in nm.iter(f"{{{_TT}}}Message")]
+
+
+def _assert_wellformed_notification(nm) -> None:
+    topic = nm.find(f"{{{_WSNT_NS}}}Topic")
+    assert topic is not None and (topic.text or "").strip(), (
+        "Notify carries a NotificationMessage with no Topic")
+    assert topic.get("Dialect"), "Notify Topic has no Dialect"
+    msg = nm.find(f"{{{_WSNT_NS}}}Message/{{{_TT}}}Message")
+    assert msg is not None, "Notify NotificationMessage has no tt:Message"
+    utc = msg.get("UtcTime") or ""
+    assert utc.endswith("Z"), f"tt:Message UtcTime {utc!r} is not UTC"
+
+
+@register("EVENT-2-1-17", profiles={"S", "T"}, mandatory=False,
+          requires_services={"devicemgmt", "events"})
+def test_basic_notify_delivered(dut: DUT, spec) -> None:
+    """EVENT.html#tc.EVENT-2-1-17 — BASIC NOTIFICATION INTERFACE - NOTIFY.
+
+    Subscribe with a consumer we actually run, invoke SetSynchronizationPoint
+    and require a well-formed Notify to arrive.
+    """
+    from ..runtime.notify_consumer import NotifyConsumer
+
+    with NotifyConsumer(dut.config.host) as consumer:
+        with dut.create_notify_subscription(
+                consumer_reference=consumer.url,
+                initial_termination="PT60S") as sub:
+            sub.set_synchronization_point()
+            msgs = consumer.wait_for(lambda m: len(m) > 0, timeout=10)
+        assert msgs, (
+            f"no Notify reached {consumer.url} within 10 s of "
+            f"SetSynchronizationPoint ({len(consumer.bodies)} POSTs received)"
+        )
+        for nm in msgs:
+            _assert_wellformed_notification(nm)
+
+
+@register("EVENT-2-1-24", profiles={"S", "T"}, mandatory=False,
+          requires_services={"devicemgmt", "events"})
+def test_basic_notify_sync_point(dut: DUT, spec) -> None:
+    """EVENT.html#tc.EVENT-2-1-24 — BASIC NOTIFICATION SET SYNCHRONIZATION
+    POINT.
+
+    A device with property topics sends their Initialized state on
+    Subscribe, and sends it again after SetSynchronizationPoint.
+    """
+    from ..runtime.notify_consumer import NotifyConsumer
+
+    props = dut.events.GetEventProperties()
+    raw = dut.last_response or ""
+    if 'IsProperty="true"' not in raw:
+        pytest.skip("GetEventProperties advertises no property topic")
+    del props
+
+    def has_initialized(m):
+        return "Initialized" in _property_ops(m)
+
+    with NotifyConsumer(dut.config.host) as consumer:
+        with dut.create_notify_subscription(
+                consumer_reference=consumer.url,
+                initial_termination="PT60S") as sub:
+            first = consumer.wait_for(has_initialized, timeout=10)
+            assert has_initialized(first), (
+                "no Notify with PropertyOperation=Initialized after Subscribe "
+                f"({len(consumer.bodies)} POSTs received)"
+            )
+            mark = len(consumer.bodies)
+            sub.set_synchronization_point()
+            again = consumer.wait_for(has_initialized, timeout=10, since=mark)
+        assert has_initialized(again), (
+            "no Initialized property Notify after SetSynchronizationPoint"
+        )
