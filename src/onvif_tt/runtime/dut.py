@@ -203,14 +203,13 @@ class PullPointHandle:
 class NotifyHandle:
     """Wraps a basic-notification Subscribe response.
 
-    Unlike :class:`PullPointHandle` this doesn't expose Pull/Sync — those
-    aren't part of the Notification Producer pattern. It only owns the
-    SubscriptionManager binding (Renew, Unsubscribe).
+    Unlike :class:`PullPointHandle` there is no PullMessages: the device
+    pushes. It owns the SubscriptionManager binding (Renew, Unsubscribe)
+    and SetSynchronizationPoint.
 
-    Use a throwaway ``ConsumerReference`` URL when calling
-    :meth:`DUT.create_notify_subscription` — for round-trip tests we
-    don't actually receive the Notify messages, only assert the
-    Subscribe/Unsubscribe lifecycle.
+    Lifecycle tests subscribe with a throwaway ``ConsumerReference``;
+    delivery tests pass the URL of a
+    :class:`~onvif_tt.runtime.notify_consumer.NotifyConsumer`.
     """
 
     def __init__(self, dut: "DUT", subscribe_resp: Any) -> None:
@@ -240,11 +239,22 @@ class NotifyHandle:
             binding_name=service_table.event_binding_name(
                 "subscription_manager"),
         )
-        dut.attach_plugins(self._mgr)
+        # SetSynchronizationPoint lives on the PullPointSubscription binding,
+        # and ONVIF Core sends it to the subscription reference for a basic
+        # notification subscription too (EVENT-2-1-17, EVENT-2-1-24).
+        self._sync = ONVIFService(
+            xaddr=self.subscription_url,
+            **dut._service_kwargs("events"),
+            binding_name=service_table.event_binding_name("pullpoint"),
+        )
+        dut.attach_plugins(self._mgr, self._sync)
         dut.session.subscriptions.append(self)
 
     def renew(self, termination_time: str = "PT60S") -> Any:
         return self._mgr.Renew({"TerminationTime": termination_time})
+
+    def set_synchronization_point(self) -> Any:
+        return self._sync.SetSynchronizationPoint()
 
     def unsubscribe(self) -> Any | None:
         if not self._alive:

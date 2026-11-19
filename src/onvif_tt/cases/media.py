@@ -981,3 +981,21 @@ def test_media_options_cover_current_resolution(dut: DUT, spec) -> None:
 
     if not checked:
         pytest.skip("no profile carries a VideoEncoderConfiguration")
+
+
+@register("LOCAL-MEDIA2-SET-SYNC-POINT", profiles={"T"}, mandatory=False,
+          requires_services={"devicemgmt", "media2"},
+          tags={"local", "adaptive_media"})
+def test_media2_set_synchronization_point_accepted(dut: DUT, spec) -> None:
+    """Media2 SetSynchronizationPoint is answered, not faulted.
+
+    MEDIA2_RTSS-1-1-4/-11 check that the requested I-frame shows up in the
+    stream; this is only the SOAP half. NVRs call it while bringing a channel
+    up, and a fault there can abort the rest of that setup (events included,
+    OpenIPC/majestic#379).
+    """
+    profiles = dut.media2.GetProfiles() or []
+    if not profiles:
+        pytest.skip("Media2 GetProfiles returned nothing")
+    for p in profiles:
+        dut.media2.SetSynchronizationPoint({"ProfileToken": p.token})
