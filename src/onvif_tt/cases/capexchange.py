@@ -27,19 +27,39 @@ _MEDIA2_NS = "http://www.onvif.org/ver20/media/wsdl"
 _EVENTS_NS = "http://www.onvif.org/ver10/events/wsdl"
 _IMAGING_NS = "http://www.onvif.org/ver20/imaging/wsdl"
 
+import re
+
 _XS_BOOLEAN = {"true": "true", "1": "true", "false": "false", "0": "false"}
+
+# Capability attributes the service schemas type as integers (or lists of
+# them). Their values are compared as written: reading "1" as a boolean there
+# would let MaxPullPoints="true" pass for MaxPullPoints="1".
+_NUMERIC_ATTR = re.compile(
+    r"^(Max|Maximum)|(Entries|Configurations|Length|Methods|Producers|Points"
+    r"|Sources|Outputs|Inputs|Ports|Profiles|Presets)$|^NTP$")
+
+
+def _value(name: str, v: str) -> str:
+    v = v.strip()
+    if _NUMERIC_ATTR.search(name):
+        return v
+    return _XS_BOOLEAN.get(v, v)
 
 
 def _canon(el: etree._Element) -> tuple:
-    """Order-insensitive structural form of a capabilities element."""
+    """Order-insensitive structural form of a capabilities element.
+
+    Element names are expanded QNames ({namespace}local): a capabilities
+    tree in the wrong namespace is a different element, even though the
+    xs:any GetServices wraps it in accepts anything.
+    """
     attrs = tuple(sorted(
-        (k, _XS_BOOLEAN.get(v.strip(), v.strip())) for k, v in el.attrib.items()
+        (k, _value(etree.QName(k).localname, v)) for k, v in el.attrib.items()
     ))
     text = (el.text or "").strip()
-    text = _XS_BOOLEAN.get(text, text)
     kids = tuple(sorted(
         (_canon(c) for c in el if isinstance(c.tag, str)), key=repr))
-    return (etree.QName(el).localname, attrs, text, kids)
+    return (el.tag, attrs, text, kids)
 
 
 def _embedded_caps(raw: str | bytes, ns: str) -> etree._Element | None:
